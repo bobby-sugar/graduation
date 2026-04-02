@@ -1,0 +1,41 @@
+import {
+  Controller,
+  Post,
+  UseGuards,
+  UseInterceptors,
+  UploadedFile,
+  BadRequestException,
+} from "@nestjs/common";
+import { FileInterceptor } from "@nestjs/platform-express";
+import { diskStorage } from "multer";
+import type { Request } from "express";
+import { existsSync, mkdirSync } from "fs";
+import { extname, join } from "path";
+import { JwtAuthGuard } from "../auth/jwt-auth.guard";
+
+const uploadsDir = join(__dirname, "..", "..", "uploads");
+if (!existsSync(uploadsDir)) {
+  mkdirSync(uploadsDir, { recursive: true });
+}
+
+@Controller("upload")
+@UseGuards(JwtAuthGuard)
+export class UploadController {
+  @Post()
+  @UseInterceptors(
+    FileInterceptor("file", {
+      storage: diskStorage({
+        destination: uploadsDir,
+        filename: (_req: Request, file: Express.Multer.File, cb: (error: Error | null, filename: string) => void) => {
+          const name = `${Date.now()}${extname(file.originalname) || ".jpg"}`;
+          cb(null, name);
+        },
+      }),
+      limits: { fileSize: 10 * 1024 * 1024 },
+    }),
+  )
+  upload(@UploadedFile() file: Express.Multer.File) {
+    if (!file) throw new BadRequestException("请选择文件");
+    return { url: `/uploads/${file.filename}` };
+  }
+}
