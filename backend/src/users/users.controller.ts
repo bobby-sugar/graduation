@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   Param,
   ParseIntPipe,
@@ -15,7 +16,8 @@ import { FollowsService } from "./follows.service";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { PatchMeDto } from "./dto/patch-me.dto";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
-import { GetUser } from "../auth/get-user.decorator";
+import { OptionalJwtAuthGuard } from "../auth/optional-jwt.guard";
+import { GetUser, GetUserOptional } from "../auth/get-user.decorator";
 
 @Controller("users")
 export class UsersController {
@@ -72,8 +74,12 @@ export class UsersController {
   }
 
   @Get(":id/likes-artworks")
-  findLikedArtworks(@Param("id", ParseIntPipe) id: number) {
-    return this.usersService.findLikedArtworksPublic(id);
+  @UseGuards(OptionalJwtAuthGuard)
+  findLikedArtworks(
+    @Param("id", ParseIntPipe) id: number,
+    @GetUserOptional() user?: { id: number },
+  ) {
+    return this.usersService.findLikedArtworksPublic(id, user?.id);
   }
 
   @Get(":id")
@@ -82,7 +88,15 @@ export class UsersController {
   }
 
   @Patch(":id")
-  update(@Param("id", ParseIntPipe) id: number, @Body() dto: UpdateUserDto) {
+  @UseGuards(JwtAuthGuard)
+  update(
+    @GetUser() user: { id: number },
+    @Param("id", ParseIntPipe) id: number,
+    @Body() dto: UpdateUserDto,
+  ) {
+    if (user.id !== id) {
+      throw new ForbiddenException("只能修改自己的资料");
+    }
     return this.usersService.update(id, dto);
   }
 }

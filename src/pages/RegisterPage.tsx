@@ -43,65 +43,121 @@ export default function RegisterPage() {
   };
 
   return (
-    <div className="login-page">
-      <div className="login-card">
-        <h1 className="login-title">注册</h1>
-        <form className="login-form" onSubmit={handleSubmit}>
-          <label className="login-label">用户名</label>
-          <input
-            type="text"
-            className="login-input"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            placeholder="请输入昵称/用户名"
-            autoComplete="username"
-            disabled={loading}
-          />
-          <label className="login-label">邮箱</label>
-          <input
-            type="email"
-            className="login-input"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="请输入邮箱"
-            autoComplete="email"
-            disabled={loading}
-          />
-          <label className="login-label">密码</label>
-          <input
-            type="password"
-            className="login-input"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="请输入密码"
-            autoComplete="new-password"
-            disabled={loading}
-          />
-          <label className="login-label">确认密码</label>
-          <input
-            type="password"
-            className="login-input"
-            value={confirm}
-            onChange={(e) => setConfirm(e.target.value)}
-            placeholder="请再次输入密码"
-            autoComplete="new-password"
-            disabled={loading}
-          />
-          {error && <p className="login-error">{error}</p>}
-          <div className="login-actions">
-            <button
-              type="button"
-              className="login-secondary"
-              disabled={loading}
-              onClick={() => navigate("/login")}
-            >
-              返回登录
-            </button>
-            <button type="submit" className="login-submit" disabled={loading}>
-              {loading ? "注册中…" : "注册"}
-            </button>
+    <div className="auth-page">
+      <div className="auth-page-bg" aria-hidden />
+      <div className="auth-page-inner">
+        <div className="auth-brand">
+          <div className="auth-brand-mark" aria-hidden>
+            <span className="auth-brand-icon" />
           </div>
-        </form>
+          <span className="auth-brand-text">YumeCore</span>
+          <p className="auth-brand-tagline">创作 · 展示 · 约稿</p>
+        </div>
+
+        <div className="auth-card auth-card--wide">
+          <div className="auth-card-accent" aria-hidden />
+          <header className="auth-card-header">
+            <h1 className="auth-title">创建账户</h1>
+            <p className="auth-subtitle">加入社区，发布作品并参与约稿</p>
+          </header>
+
+          <form className="auth-form" onSubmit={handleSubmit}>
+            <div className="auth-field-row">
+              <div className="auth-field">
+                <label className="auth-label" htmlFor="reg-username">
+                  用户名
+                </label>
+                <input
+                  id="reg-username"
+                  type="text"
+                  className="auth-input"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder="展示用的昵称"
+                  autoComplete="username"
+                  disabled={loading}
+                />
+              </div>
+              <div className="auth-field">
+                <label className="auth-label" htmlFor="reg-email">
+                  邮箱
+                </label>
+                <input
+                  id="reg-email"
+                  type="email"
+                  className="auth-input"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="用于登录与找回"
+                  autoComplete="email"
+                  disabled={loading}
+                />
+              </div>
+            </div>
+
+            <div className="auth-field-row">
+              <div className="auth-field">
+                <label className="auth-label" htmlFor="reg-password">
+                  密码
+                </label>
+                <input
+                  id="reg-password"
+                  type="password"
+                  className="auth-input"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="至少 6 位建议更强"
+                  autoComplete="new-password"
+                  disabled={loading}
+                />
+              </div>
+              <div className="auth-field">
+                <label className="auth-label" htmlFor="reg-confirm">
+                  确认密码
+                </label>
+                <input
+                  id="reg-confirm"
+                  type="password"
+                  className="auth-input"
+                  value={confirm}
+                  onChange={(e) => setConfirm(e.target.value)}
+                  placeholder="再次输入密码"
+                  autoComplete="new-password"
+                  disabled={loading}
+                />
+              </div>
+            </div>
+
+            {error ? (
+              <div className="auth-error" role="alert">
+                {error}
+              </div>
+            ) : null}
+
+            <button type="submit" className="auth-btn-primary" disabled={loading}>
+              {loading ? (
+                <span className="auth-btn-loading">
+                  <span className="auth-spinner" aria-hidden />
+                  注册中…
+                </span>
+              ) : (
+                "注册并继续"
+              )}
+            </button>
+
+            <p className="auth-switch">
+              已有账户？
+              <button
+                type="button"
+                className="auth-switch-link"
+                disabled={loading}
+                onClick={() => navigate(`/login?from=${encodeURIComponent(from)}`)}
+              >
+                返回登录
+              </button>
+            </p>
+          </form>
+        </div>
       </div>
     </div>
   );

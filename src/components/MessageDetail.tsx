@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
+import { useAuthPrompt } from "../contexts/AuthPromptContext";
+import { resolveApiUrl } from "../config/api";
+import { buildArtworkCloseState } from "../artwork/artworkDetailNavigation";
 
 interface ChatMessage {
     id: string;
@@ -10,7 +13,6 @@ interface ChatMessage {
     content: string;
     timestamp: string;
     isOwn?: boolean;
-    ocArtworkId?: number;
 }
 
 interface CommissionCardPayload {
@@ -70,6 +72,98 @@ interface CommissionTakenByOtherPayload {
     title: string;
 }
 
+interface ChatImagePayload {
+    type: "chat_image";
+    url: string;
+}
+
+const CHAT_IMAGE_PREFIX = "__CHAT_IMAGE__";
+const ARTWORK_SHARE_PREFIX = "__ARTWORK_SHARE__";
+
+type ArtworkSharePayload = {
+    type: "artwork_share";
+    artworkId: number;
+    title: string;
+    imageUrl?: string | null;
+    category?: string | null;
+    authorUsername?: string | null;
+};
+
+const ARTWORK_SHARE_TITLE_DISPLAY_MAX = 180;
+
+function truncateForDisplay(text: string, maxChars: number): string {
+    const arr = Array.from(text);
+    if (arr.length <= maxChars) return text;
+    return `${arr.slice(0, maxChars).join("")}…`;
+}
+
+function MessageArtworkShareCard(props: { share: ArtworkSharePayload; onOpen: (artworkId: number) => void }) {
+    const { share, onOpen } = props;
+    const artworkId = share.artworkId;
+    const [imgBroken, setImgBroken] = useState(false);
+    const raw = share.imageUrl;
+    const imgSrc =
+        typeof raw === "string" && raw.trim()
+            ? /^https?:\/\//i.test(raw.trim())
+                ? raw.trim()
+                : resolveApiUrl(raw.trim())
+            : resolveApiUrl(`/uploads/oc_${artworkId}.jpg`);
+    const titleShown = truncateForDisplay(share.title, ARTWORK_SHARE_TITLE_DISPLAY_MAX);
+    return (
+        <div className="message-commission-card-wrap">
+            <button
+                type="button"
+                className="message-commission-card message-commission-card--artwork-share"
+                onClick={() => onOpen(artworkId)}
+            >
+                <div className="message-commission-card-image-wrap">
+                    {!imgBroken ? (
+                        <img
+                            src={imgSrc}
+                            alt={share.title}
+                            className="message-commission-card-image"
+                            onError={() => setImgBroken(true)}
+                        />
+                    ) : (
+                        <div className="message-commission-card-image-placeholder">预览不可用</div>
+                    )}
+                </div>
+                <div className="message-commission-card-title">{titleShown}</div>
+                {share.authorUsername ? (
+                    <div className="message-artwork-share-author">@{share.authorUsername}</div>
+                ) : null}
+                <div className="message-commission-card-hint">点击查看作品详情</div>
+            </button>
+        </div>
+    );
+}
+
+/** 私信工具栏表情面板（常用） */
+const CHAT_TOOLBAR_EMOJIS: string[] = (
+    "😀 😃 😄 😁 😆 😅 🤣 😂 🙂 😊 😍 🥰 😘 😎 🤔 🙄 😢 😭 😤 😡 🥳 🤝 👍 👎 👏 🙏 💪 🔥 ✨ 💯 ❤️ 🧡 💛 💚 💙 💜 🤍 🖤 💔 💕 ⭐ 🌟 ✔️ ❌ ❓ 💬 🎉 🎁 🍀 ☕ 🍰 🌸 🌙 ☀️ 🌈 🐱 🐶"
+)
+    .split(/\s+/)
+    .filter(Boolean);
+
+function parseChatImage(text: string): ChatImagePayload | null {
+    if (!text.startsWith(CHAT_IMAGE_PREFIX)) return null;
+    const raw = text.slice(CHAT_IMAGE_PREFIX.length);
+    try {
+        const payload = JSON.parse(raw) as ChatImagePayload;
+        if (
+            payload &&
+            payload.type === "chat_image" &&
+            typeof payload.url === "string" &&
+            payload.url.length > 0
+        ) {
+            return payload;
+        }
+    } catch {
+        return null;
+    }
+    return null;
+}
+
 interface MessageDetailProps {
     messageId: string;
     sender: string;
@@ -100,16 +194,20 @@ export default function MessageDetail({
 }: MessageDetailProps) {
     const [inputValue, setInputValue] = useState('');
     const [localMessages, setLocalMessages] = useState<ChatMessage[]>([]);
-    const [showOcPicker, setShowOcPicker] = useState(false);
-    const [myArtworks, setMyArtworks] = useState<any[]>([]);
-    const { user } = useAuth();
+    const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+    const [uploadingImage, setUploadingImage] = useState(false);
+    const { user, token } = useAuth();
+    const { openAuthPrompt } = useAuthPrompt();
     const navigate = useNavigate();
-    const API_BASE_URL = "http://localhost:3000";
+    const location = useLocation();
     const [isSending, setIsSending] = useState(false);
     const [sendError, setSendError] = useState<string | null>(null);
     const [lastFailedText, setLastFailedText] = useState<string>("");
     const contentRef = useRef<HTMLDivElement | null>(null);
     const shouldAutoScrollRef = useRef(true);
+    const fileInputRef = useRef<HTMLInputElement | null>(null);
+    const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+    const toolbarAreaRef = useRef<HTMLDivElement | null>(null);
 
     const formatDateTime = (dateString: string) => {
         const date = new Date(dateString);
@@ -205,12 +303,35 @@ export default function MessageDetail({
         });
     }, [localMessages]);
 
-    const extractArtworkId = (text: string): number | undefined => {
-        const match = text.match(/\/artwork\/(\d+)/);
-        if (!match) return undefined;
-        const idNum = Number(match[1]);
-        return Number.isFinite(idNum) ? idNum : undefined;
-    };
+    useEffect(() => {
+        if (!showEmojiPicker) return;
+        const onDocMouseDown = (e: MouseEvent) => {
+            const root = toolbarAreaRef.current;
+            if (!root || root.contains(e.target as Node)) return;
+            setShowEmojiPicker(false);
+        };
+        document.addEventListener("mousedown", onDocMouseDown);
+        return () => document.removeEventListener("mousedown", onDocMouseDown);
+    }, [showEmojiPicker]);
+
+    /** 视口或底部输入区高度变化时，若仍在「贴底」模式则保持滚到底，避免气泡被裁切 */
+    useEffect(() => {
+        const el = contentRef.current;
+        if (!el) return;
+        const syncScroll = () => {
+            if (!shouldAutoScrollRef.current) return;
+            el.scrollTop = el.scrollHeight;
+        };
+        const ro = new ResizeObserver(() => {
+            requestAnimationFrame(syncScroll);
+        });
+        ro.observe(el);
+        window.addEventListener("resize", syncScroll);
+        return () => {
+            ro.disconnect();
+            window.removeEventListener("resize", syncScroll);
+        };
+    }, [messageId]);
 
     const parseCommissionCard = (text: string): CommissionCardPayload | null => {
         if (!text.startsWith("__COMMISSION_CARD__")) return null;
@@ -403,26 +524,135 @@ export default function MessageDetail({
         return null;
     };
 
+    const parseArtworkShare = (text: string): ArtworkSharePayload | null => {
+        if (!text.startsWith(ARTWORK_SHARE_PREFIX)) return null;
+        const raw = text.slice(ARTWORK_SHARE_PREFIX.length);
+        try {
+            const payload = JSON.parse(raw);
+            if (payload && payload.type === "artwork_share" && typeof payload.title === "string") {
+                const rawId = payload.artworkId;
+                const artworkId =
+                    typeof rawId === "number"
+                        ? rawId
+                        : typeof rawId === "string" && /^\d+$/.test(rawId)
+                          ? Number(rawId)
+                          : NaN;
+                if (!Number.isFinite(artworkId)) return null;
+                return { ...payload, artworkId } as ArtworkSharePayload;
+            }
+        } catch {
+            return null;
+        }
+        return null;
+    };
+
     const openUserProfile = (userId?: number) => {
         if (!userId) return;
         navigate(`/user/${userId}`);
     };
 
-    const handleOpenOcPicker = async () => {
-        if (!user) {
-            setShowOcPicker(false);
+    const openImageFilePicker = () => {
+        if (!token) {
+            openAuthPrompt({
+                title: "登录后发送图片",
+                description: "登录后可在私信中发送图片与文件。",
+            });
             return;
         }
-        setShowOcPicker((prev) => !prev);
-        if (myArtworks.length > 0) return;
+        setShowEmojiPicker(false);
+        fileInputRef.current?.click();
+    };
+
+    const handleImageFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        e.target.value = "";
+        if (!file || !file.type.startsWith("image/")) return;
+        if (!token) {
+            openAuthPrompt({
+                title: "登录后发送图片",
+                description: "登录后可在私信中发送图片与文件。",
+            });
+            return;
+        }
+        setUploadingImage(true);
+        setSendError(null);
         try {
-            const res = await fetch(`/api/artworks?authorId=${user.id}`);
-            if (!res.ok) return;
-            const data = await res.json();
-            setMyArtworks(data || []);
-        } catch (e) {
-            // eslint-disable-next-line no-console
-            console.error(e);
+            const fd = new FormData();
+            fd.append("file", file);
+            const res = await fetch("/api/upload", {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}` },
+                body: fd,
+            });
+            if (!res.ok) {
+                const errBody = await res.json().catch(() => ({}));
+                const detail = errBody?.message
+                    ? Array.isArray(errBody.message)
+                        ? errBody.message.join("，")
+                        : String(errBody.message)
+                    : "图片上传失败";
+                throw new Error(detail);
+            }
+            const data = (await res.json()) as { url?: string };
+            const rel = typeof data.url === "string" ? data.url : "";
+            if (!rel) throw new Error("上传未返回图片地址");
+            const fullUrl = resolveApiUrl(rel);
+            const payload = `${CHAT_IMAGE_PREFIX}${JSON.stringify({
+                type: "chat_image",
+                url: fullUrl,
+            } satisfies ChatImagePayload)}`;
+            if (onSendMessage) {
+                setIsSending(true);
+                try {
+                    await onSendMessage(payload);
+                    onSent?.();
+                } catch (err) {
+                    const msg = err instanceof Error ? err.message : "发送失败，请稍后重试";
+                    setSendError(msg);
+                } finally {
+                    setIsSending(false);
+                }
+            } else {
+                const now = new Date().toISOString();
+                const newMsg: ChatMessage = {
+                    id: `${messageId}-${Date.now()}`,
+                    sender: "我",
+                    content: payload,
+                    timestamp: now,
+                    isOwn: true,
+                };
+                setLocalMessages((prev) => [...prev, newMsg]);
+                onSent?.();
+            }
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : "图片上传失败";
+            setSendError(msg);
+        } finally {
+            setUploadingImage(false);
+        }
+    };
+
+    const toggleEmojiPicker = () => {
+        setShowEmojiPicker((prev) => !prev);
+    };
+
+    const insertEmoji = (emoji: string) => {
+        const ta = textareaRef.current;
+        if (ta) {
+            const start = ta.selectionStart;
+            const end = ta.selectionEnd;
+            const next = inputValue.slice(0, start) + emoji + inputValue.slice(end);
+            setInputValue(next);
+            onDraftChange?.(next);
+            requestAnimationFrame(() => {
+                ta.focus();
+                const pos = start + emoji.length;
+                ta.setSelectionRange(pos, pos);
+            });
+        } else {
+            const next = inputValue + emoji;
+            setInputValue(next);
+            onDraftChange?.(next);
         }
     };
 
@@ -466,8 +696,8 @@ export default function MessageDetail({
                 }}
             >
                 {localMessages.map((msg, index) => {
-                    const artworkId = msg.ocArtworkId ?? extractArtworkId(msg.content);
                     const commissionCard = parseCommissionCard(msg.content);
+                    const artworkShare = parseArtworkShare(msg.content);
                     const applyResult = parseApplyResult(msg.content);
                     const paymentNotice = parsePaymentNotice(msg.content);
                     const paymentCancelledNotice = parsePaymentCancelled(msg.content);
@@ -477,6 +707,7 @@ export default function MessageDetail({
                     const revisedNotice = parseRevised(msg.content);
                     const deletedNotice = parseDeletedNotice(msg.content);
                     const takenByOtherNotice = parseTakenByOther(msg.content);
+                    const chatImage = parseChatImage(msg.content);
                     const bubbleAvatar = msg.isOwn ? user?.avatarUrl ?? null : msg.senderAvatar ?? null;
                     const bubbleAvatarName = msg.isOwn ? (user?.username ?? "我") : msg.sender;
                     const prev = index > 0 ? localMessages[index - 1] : null;
@@ -484,13 +715,15 @@ export default function MessageDetail({
                         !prev ||
                         Math.abs(new Date(msg.timestamp).getTime() - new Date(prev.timestamp).getTime()) > 5 * 60 * 1000;
                     return (
-                    <div key={msg.id}>
+                        <div key={msg.id}>
                         {needTimeDivider && (
                             <div className="message-time-divider">
-                                {formatCenterTimestamp(msg.timestamp)}
+                                <span className="message-time-divider-label">
+                                    {formatCenterTimestamp(msg.timestamp)}
+                                </span>
                             </div>
                         )}
-                    <div className={`message-bubble ${msg.isOwn ? 'own' : ''}`}>
+                        <div className={`message-bubble ${msg.isOwn ? 'own' : ''}`}>
                         {bubbleAvatar ? (
                             <img
                                 src={bubbleAvatar}
@@ -513,6 +746,7 @@ export default function MessageDetail({
                         <div className="message-bubble-content">
                             {msg.content &&
                                 !commissionCard &&
+                                !artworkShare &&
                                 !applyResult &&
                                 !paymentNotice &&
                                 !paymentCancelledNotice &&
@@ -521,10 +755,26 @@ export default function MessageDetail({
                                 !reviewRejectedNotice &&
                                 !revisedNotice &&
                                 !deletedNotice &&
-                                !takenByOtherNotice && (
+                                !takenByOtherNotice &&
+                                !chatImage && (
                                 <div className="message-bubble-text">
                                     {msg.content}
                                 </div>
+                            )}
+                            {chatImage && (
+                                <a
+                                    href={chatImage.url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="message-bubble-chat-image-link"
+                                >
+                                    <img
+                                        src={chatImage.url}
+                                        alt="聊天图片"
+                                        className="message-bubble-chat-image"
+                                        loading="lazy"
+                                    />
+                                </a>
                             )}
                             {paymentNotice && (
                                 <div className="message-bubble-text">
@@ -610,94 +860,83 @@ export default function MessageDetail({
                                     </button>
                                 </div>
                             )}
-                            {artworkId && (
-                                <div style={{ marginTop: 8, maxWidth: 260 }}>
-                                    <OcPreview artworkId={artworkId} apiBaseUrl={API_BASE_URL} onClick={() => navigate(`/artwork/${artworkId}`)} />
-                                </div>
-                            )}
+                            {artworkShare ? (
+                                <MessageArtworkShareCard
+                                    share={artworkShare}
+                                    onOpen={(artworkId) =>
+                                        navigate(`/artwork/${artworkId}`, {
+                                            state: buildArtworkCloseState(`${location.pathname}${location.search}`),
+                                        })
+                                    }
+                                />
+                            ) : null}
+                        </div>
                         </div>
                     </div>
-                    </div>
-                )})}
+                );
+            })}
             </div>
             <div className="message-detail-input">
-                <div className="message-detail-input-toolbar">
-                    <button className="message-detail-input-icon">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-                            <circle cx="8.5" cy="8.5" r="1.5"/>
-                            <polyline points="21 15 16 10 5 21"/>
-                        </svg>
-                    </button>
-                    <button className="message-detail-input-icon" onClick={handleOpenOcPicker}>
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-                            <path d="M8 12h8" />
-                            <path d="M12 8v8" />
-                        </svg>
-                    </button>
-                </div>
-                {showOcPicker && (
-                    <div className="message-oc-picker">
-                        <div className="message-oc-picker-header">选择要发送的 OC 稿件</div>
-                            {myArtworks.length === 0 ? (
-                            <div className="message-oc-picker-empty">
-                                当前账号暂无可发送的 OC（主页还没有作品）。
-                            </div>
-                        ) : (
-                            <div className="message-oc-picker-list">
-                                {myArtworks.map((art: any) => {
-                                    const rawUrl: string | null | undefined = art.imageUrl;
-                                    let imageUrl = "";
-                                    if (typeof rawUrl === "string" && rawUrl.length > 0) {
-                                        imageUrl = rawUrl.startsWith("http") ? rawUrl : `${API_BASE_URL}${rawUrl}`;
-                                    }
-                                    if (!imageUrl) {
-                                        imageUrl = `${API_BASE_URL}/uploads/oc_${art.id}.jpg`;
-                                    }
-                                    return (
-                                        <button
-                                            key={art.id}
-                                            type="button"
-                                            className="message-oc-picker-item"
-                                            onClick={async () => {
-                                                const text = `我分享了一个OC作品：/artwork/${art.id}`;
-                                                if (onSendMessage) {
-                                                    try {
-                                                        await onSendMessage(text);
-                                                    } catch (e) {
-                                                        // eslint-disable-next-line no-console
-                                                        console.error(e);
-                                                        return;
-                                                    }
-                                                } else {
-                                                    const now = new Date().toISOString();
-                                                    const newMsg: ChatMessage = {
-                                                        id: `${messageId}-${Date.now()}`,
-                                                        sender: "我",
-                                                        content: text,
-                                                        timestamp: now,
-                                                        isOwn: true,
-                                                        ocArtworkId: art.id,
-                                                    };
-                                                    setLocalMessages((prev) => [...prev, newMsg]);
-                                                }
-                                                setShowOcPicker(false);
-                                            }}
-                                        >
-                                            <img src={imageUrl} alt={art.title} className="message-oc-picker-thumb" />
-                                            <div className="message-oc-picker-text">
-                                                <div className="message-oc-picker-title">{art.title}</div>
-                                                <div className="message-oc-picker-sub">点击插入链接</div>
-                                            </div>
-                                        </button>
-                                    );
-                                })}
-                            </div>
-                        )}
+                <div className="message-detail-toolbar-area" ref={toolbarAreaRef}>
+                    <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/*"
+                        className="message-detail-file-input-hidden"
+                        aria-hidden
+                        tabIndex={-1}
+                        onChange={handleImageFileChange}
+                    />
+                    <div className="message-detail-input-toolbar">
+                        <button
+                            type="button"
+                            className="message-detail-input-icon"
+                            title="发送图片"
+                            aria-label="发送图片"
+                            disabled={uploadingImage || isSending}
+                            onClick={openImageFilePicker}
+                        >
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                                <circle cx="8.5" cy="8.5" r="1.5" />
+                                <polyline points="21 15 16 10 5 21" />
+                            </svg>
+                        </button>
+                        <button
+                            type="button"
+                            className="message-detail-input-icon message-detail-input-icon--emoji"
+                            title="表情"
+                            aria-label="插入表情"
+                            aria-expanded={showEmojiPicker}
+                            onClick={toggleEmojiPicker}
+                        >
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <circle cx="12" cy="12" r="10" />
+                                <path d="M8 14s1.5 2 4 2 4-2 4-2" />
+                                <line x1="9" y1="9" x2="9.01" y2="9" />
+                                <line x1="15" y1="9" x2="15.01" y2="9" />
+                            </svg>
+                        </button>
                     </div>
-                )}
+                    {showEmojiPicker && (
+                        <div className="message-detail-emoji-picker" role="listbox" aria-label="表情">
+                            <div className="message-detail-emoji-picker-grid">
+                                {CHAT_TOOLBAR_EMOJIS.map((emoji) => (
+                                    <button
+                                        key={emoji}
+                                        type="button"
+                                        className="message-detail-emoji-cell"
+                                        onClick={() => insertEmoji(emoji)}
+                                    >
+                                        {emoji}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                </div>
                 <textarea
+                    ref={textareaRef}
                     placeholder="请输入消息内容"
                     className="message-detail-input-field"
                     value={inputValue}
@@ -743,54 +982,5 @@ export default function MessageDetail({
                 </div>
             </div>
         </div>
-    );
-}
-
-interface OcPreviewProps {
-    artworkId: number;
-    apiBaseUrl: string;
-    onClick: () => void;
-}
-
-function OcPreview({ artworkId, apiBaseUrl, onClick }: OcPreviewProps) {
-    const [title, setTitle] = useState<string>("");
-    const [imageUrl, setImageUrl] = useState<string | null>(null);
-
-    useEffect(() => {
-        const fetchArt = async () => {
-            try {
-                const res = await fetch(`/api/artworks/${artworkId}`);
-                if (!res.ok) return;
-                const art = await res.json();
-                const rawUrl: string | null | undefined = art.imageUrl;
-                let url = "";
-                if (typeof rawUrl === "string" && rawUrl.length > 0) {
-                    url = rawUrl.startsWith("http") ? rawUrl : `${apiBaseUrl}${rawUrl}`;
-                }
-                if (!url) {
-                    url = `${apiBaseUrl}/uploads/oc_${art.id}.jpg`;
-                }
-                setTitle(art.title ?? `OC #${art.id}`);
-                setImageUrl(url);
-            } catch (e) {
-                // eslint-disable-next-line no-console
-                console.error(e);
-            }
-        };
-        fetchArt();
-    }, [artworkId, apiBaseUrl]);
-
-    if (!imageUrl && !title) return null;
-
-    return (
-        <button type="button" className="message-oc-card" onClick={onClick}>
-            {imageUrl && (
-                <div className="message-oc-card-image-wrap">
-                    <img src={imageUrl} alt={title} className="message-oc-card-image" />
-                </div>
-            )}
-            <div className="message-oc-card-title">{title}</div>
-            <div className="message-oc-card-hint">点击查看 OC 详情</div>
-        </button>
     );
 }

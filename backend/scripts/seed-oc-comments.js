@@ -30,7 +30,7 @@ function pick(arr, idx) {
   return arr[idx % arr.length];
 }
 
-async function ensureComment({ artworkId, userId, content, parentId = null }) {
+async function ensureComment({ artworkId, artworkAuthorId, userId, content, parentId = null }) {
   const existing = await prisma.comment.findFirst({
     where: { artworkId, userId, content, parentId },
     select: { id: true },
@@ -41,6 +41,33 @@ async function ensureComment({ artworkId, userId, content, parentId = null }) {
     data: { artworkId, userId, content, parentId },
     select: { id: true },
   });
+  if (!parentId && userId !== artworkAuthorId) {
+    await prisma.notification.create({
+      data: {
+        type: "comment",
+        userId: artworkAuthorId,
+        fromUserId: userId,
+        artworkId,
+        commentId: created.id,
+      },
+    });
+  } else if (parentId) {
+    const parent = await prisma.comment.findUnique({
+      where: { id: parentId },
+      select: { userId: true },
+    });
+    if (parent && parent.userId !== userId) {
+      await prisma.notification.create({
+        data: {
+          type: "reply",
+          userId: parent.userId,
+          fromUserId: userId,
+          artworkId,
+          commentId: created.id,
+        },
+      });
+    }
+  }
   return { id: created.id, created: true };
 }
 
@@ -86,6 +113,7 @@ async function main() {
 
     const top1 = await ensureComment({
       artworkId: art.id,
+      artworkAuthorId: art.authorId,
       userId: c1.id,
       content: c1Text,
     });
@@ -93,6 +121,7 @@ async function main() {
 
     const top2 = await ensureComment({
       artworkId: art.id,
+      artworkAuthorId: art.authorId,
       userId: c2.id,
       content: c2Text,
     });
@@ -100,6 +129,7 @@ async function main() {
 
     const top3 = await ensureComment({
       artworkId: art.id,
+      artworkAuthorId: art.authorId,
       userId: c3.id,
       content: c3Text,
     });
@@ -107,6 +137,7 @@ async function main() {
 
     const reply = await ensureComment({
       artworkId: art.id,
+      artworkAuthorId: art.authorId,
       userId: r1.id,
       content: r1Text,
       parentId: top1.id,

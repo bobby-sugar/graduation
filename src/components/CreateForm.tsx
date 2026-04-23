@@ -1,591 +1,225 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import { useAuth } from "../contexts/AuthContext";
+import { getStudioFormFields, partitionStudioFields, studioFieldPlaceholder, type FormFieldDef } from "../studio/studioFormFields";
+import { OcTagsPanel } from "../studio/OcTagsPanel";
+import { normalizeOcTagsField } from "../studio/ocStudioTags";
 
-interface CreateFormProps {
+export interface CreateFormProps {
     category: string;
     isVisible: boolean;
     onClose: () => void;
-    onSubmit: (data: any) => void;
-    onNext?: (data: any) => void;
+    onSubmit: (data: Record<string, unknown>) => void;
+    onNext?: (data: Record<string, unknown>) => void;
 }
 
 // 使用一个计数器来确保每次显示时都重新触发动画
 let animationKey = 0;
 
-const getFormFields = (category: string) => {
-    switch (category) {
-        case 'OC':
-            return [
-                { name: 'name', label: '姓名', type: 'text', required: true },
-                { name: 'gender', label: '性别', type: 'text', required: false },
-                { name: 'age', label: '年龄', type: 'number', required: false },
-                { name: 'race', label: '种族', type: 'text', required: false },
-                { name: 'occupation', label: '职业', type: 'text', required: false },
-                { name: 'personality', label: '性格特点', type: 'textarea', required: false },
-                { name: 'description', label: '简介', type: 'textarea', required: false },
-                { name: 'tags', label: '标签', type: 'text', required: false },
-            ];
-        case '世界观':
-            return [
-                { name: 'name', label: '世界观名称', type: 'text', required: true },
-                { name: 'description', label: '世界观描述', type: 'textarea', required: true },
-                { name: 'type', label: '类型', type: 'select', options: ['奇幻', '科幻', '现代', '古代', '其他'], required: false },
-            ];
-        case '捏捏':
-            return [
-                { name: 'name', label: '名称', type: 'text', required: true },
-                { name: 'description', label: '描述', type: 'textarea', required: false },
-            ];
-        case '表情包':
-            return [
-                { name: 'name', label: '表情包名称', type: 'text', required: true },
-                { name: 'description', label: '描述', type: 'textarea', required: false },
-                { name: 'tags', label: '标签', type: 'text', required: false },
-            ];
-        case '小说':
-            return [
-                { name: 'title', label: '小说标题', type: 'text', required: true },
-                { name: 'description', label: '简介', type: 'textarea', required: true },
-                { name: 'genre', label: '类型', type: 'select', options: ['言情', '玄幻', '科幻', '悬疑', '其他'], required: false },
-            ];
-        case '漫画':
-            return [
-                { name: 'title', label: '漫画标题', type: 'text', required: true },
-                { name: 'description', label: '简介', type: 'textarea', required: true },
-                { name: 'genre', label: '类型', type: 'select', options: ['动作', '恋爱', '科幻', '悬疑', '其他'], required: false },
-            ];
-        default:
-            return [];
-    }
-};
-
-interface CustomTag {
-    id: string;
-    name: string;
-    content: string;
-}
-
-interface OCRelation {
-    id: string;
-    name: string;
-    relation: string;
-}
+const getFormFields = getStudioFormFields;
 
 export default function CreateForm({ category, isVisible, onClose, onSubmit, onNext }: CreateFormProps) {
-    const [formData, setFormData] = useState<Record<string, any>>({});
+    const { user } = useAuth();
+    const [formData, setFormData] = useState<Record<string, unknown>>({});
     const [animKey, setAnimKey] = useState(0);
-    const [customTags, setCustomTags] = useState<CustomTag[]>([]);
-    const [newTagName, setNewTagName] = useState('');
-    const [newTagContent, setNewTagContent] = useState('');
-    const [showTagInput, setShowTagInput] = useState(false);
-    
-    // 折叠/展开状态
-    const [isBasicInfoExpanded, setIsBasicInfoExpanded] = useState(false);
-    const [isOCRelationExpanded, setIsOCRelationExpanded] = useState(false);
-    const [isModuleSelectorExpanded, setIsModuleSelectorExpanded] = useState(false);
-    
-    // OC关系
-    const [ocRelations, setOcRelations] = useState<OCRelation[]>([]);
-    const [showRelationInput, setShowRelationInput] = useState(false);
-    const [newRelationName, setNewRelationName] = useState('');
-    const [newRelationType, setNewRelationType] = useState('');
-    
-    // 已添加的模块
-    const [addedModules, setAddedModules] = useState<string[]>([]);
-    
+
     const fields = getFormFields(category);
-    
-    const availableModules = ['世界观', '外貌信息', '属性面板', '天赋技能', '兴趣爱好', '语录'];
+    const partitioned = useMemo(() => partitionStudioFields(category, fields), [category, fields]);
+    const section3Fields = useMemo(
+        () => partitioned.section3Fields.filter((f) => f.name !== "tags"),
+        [partitioned.section3Fields],
+    );
+    const { titleField } = partitioned;
 
     useEffect(() => {
         if (isVisible) {
-            // 重置表单数据
-            setFormData({});
-            setCustomTags([]);
-            setNewTagName('');
-            setNewTagContent('');
-            setShowTagInput(false);
-            setIsBasicInfoExpanded(false);
-            setIsOCRelationExpanded(false);
-            setIsModuleSelectorExpanded(false);
-            setOcRelations([]);
-            setShowRelationInput(false);
-            setNewRelationName('');
-            setNewRelationType('');
-            setAddedModules([]);
-            // 每次显示时更新动画 key，确保重新触发动画
-            animationKey++;
+            setFormData(category === "OC" ? { tags: "oc" } : {});
+            animationKey += 1;
             setAnimKey(animationKey);
         }
     }, [isVisible, category]);
 
-    const handleChange = (name: string, value: any) => {
-        setFormData(prev => ({
-            ...prev,
-            [name]: value
-        }));
-    };
-
-    const handleAddTag = () => {
-        if (newTagName.trim()) {
-            const newTag: CustomTag = {
-                id: Date.now().toString(),
-                name: newTagName.trim(),
-                content: newTagContent.trim()
-            };
-            setCustomTags(prev => [...prev, newTag]);
-            setNewTagName('');
-            setNewTagContent('');
-            setShowTagInput(false);
-        }
-    };
-
-    const handleRemoveTag = (tagId: string) => {
-        setCustomTags(prev => prev.filter(t => t.id !== tagId));
-    };
-
-    const handleAddRelation = () => {
-        if (newRelationName.trim() && newRelationType.trim()) {
-            const newRelation: OCRelation = {
-                id: Date.now().toString(),
-                name: newRelationName.trim(),
-                relation: newRelationType.trim()
-            };
-            setOcRelations(prev => [...prev, newRelation]);
-            setNewRelationName('');
-            setNewRelationType('');
-            setShowRelationInput(false);
-        }
-    };
-
-    const handleRemoveRelation = (relationId: string) => {
-        setOcRelations(prev => prev.filter(r => r.id !== relationId));
-    };
-
-    const handleAddModule = (module: string) => {
-        if (!addedModules.includes(module)) {
-            setAddedModules(prev => [...prev, module]);
-            setIsModuleSelectorExpanded(false);
-        }
-    };
-
-    const handleRemoveModule = (module: string) => {
-        setAddedModules(prev => prev.filter(m => m !== module));
-    };
+    const handleChange = useCallback((name: string, value: unknown) => {
+        setFormData((prev) => ({ ...prev, [name]: value }));
+    }, []);
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
-        const submitData = {
+        const submitData: Record<string, unknown> = {
             ...formData,
-            customTags: customTags,
-            ocRelations: ocRelations,
-            addedModules: addedModules
+            ocWorldviewLinks: [],
         };
-        
-        const isOC = category === 'OC';
-        if (isOC && onNext) {
-            // OC类别点击下一步，调用onNext
+        if (category === "OC") {
+            submitData.tags = normalizeOcTagsField(submitData.tags);
+        }
+
+        if (onNext) {
             onNext(submitData);
         } else {
-            // 其他类别或没有onNext，直接提交
             onSubmit(submitData);
             onClose();
         }
     };
 
+    const renderField = (field: FormFieldDef) => (
+        <div key={field.name} className="create-form-field">
+            <label className="create-form-label">
+                {field.label}
+                {field.required ? <span className="create-form-required">*</span> : null}
+            </label>
+            {field.type === "textarea" ? (
+                <textarea
+                    className="create-form-input"
+                    value={String(formData[field.name] ?? "")}
+                    onChange={(e) => handleChange(field.name, e.target.value)}
+                    rows={field.rows ?? 4}
+                    required={field.required}
+                    placeholder={studioFieldPlaceholder(field)}
+                />
+            ) : field.type === "select" ? (
+                <select
+                    className="create-form-input"
+                    value={String(formData[field.name] ?? "")}
+                    onChange={(e) => handleChange(field.name, e.target.value)}
+                    required={field.required}
+                >
+                    <option value="">请选择（可选）</option>
+                    {field.options?.map((option) => (
+                        <option key={option} value={option}>
+                            {option}
+                        </option>
+                    ))}
+                </select>
+            ) : (
+                <input
+                    className="create-form-input"
+                    type={field.type === "number" ? "number" : "text"}
+                    value={String(formData[field.name] ?? "")}
+                    onChange={(e) => handleChange(field.name, field.type === "number" ? e.target.value : e.target.value)}
+                    required={field.required}
+                    placeholder={studioFieldPlaceholder(field)}
+                />
+            )}
+        </div>
+    );
+
     if (!isVisible) return null;
 
-    const isOC = category === 'OC';
+    const isOC = category === "OC";
+    const ocMetaFields = section3Fields.filter((f) => f.type !== "textarea");
+    const ocRoleIntroField = section3Fields.find((f) => f.name === "tagline");
 
     return (
-        <div className="create-form-wrapper" key={animKey}>
-            <div className="create-form-bubble">
+        <div className={`create-form-wrapper${isOC ? " create-form-wrapper--oc" : ""}`} key={animKey}>
+            <div className={`create-form-bubble${isOC ? " create-form-bubble--oc" : ""}`}>
                 <div className="create-form-header">
-                    <h2 className="create-form-title">创建{category}</h2>
-                    <button className="create-form-close" onClick={onClose}>
+                    <div className="create-form-header-text">
+                        <p className="create-form-eyebrow">工作站</p>
+                        <h2 className="create-form-title">创建{category}</h2>
+                        <p className="create-form-lead">
+                            {isOC
+                                ? "布局与 OC 详情页一致：左侧对应主图位，右侧为档案卡片；封面在下一步上传。"
+                                : "按类型填写档案信息，发布前可在下一步上传封面图。"}
+                        </p>
+                    </div>
+                    <button type="button" className="create-form-close" onClick={onClose} aria-label="关闭">
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                            <line x1="18" y1="6" x2="6" y2="18"></line>
-                            <line x1="6" y1="6" x2="18" y2="18"></line>
+                            <line x1="18" y1="6" x2="6" y2="18" />
+                            <line x1="6" y1="6" x2="18" y2="18" />
                         </svg>
                     </button>
                 </div>
-                
+
                 <form className="create-form-content" onSubmit={handleSubmit}>
                     {isOC ? (
-                        <>
-                            {/* 基本信息 - 可折叠 */}
-                            <div className="create-form-collapsible-section">
-                                <button
-                                    type="button"
-                                    className="create-form-collapsible-header"
-                                    onClick={() => setIsBasicInfoExpanded(!isBasicInfoExpanded)}
-                                >
-                                    <span className="create-form-collapsible-title">基本信息</span>
-                                    <svg
-                                        className={`create-form-collapsible-arrow ${isBasicInfoExpanded ? 'expanded' : ''}`}
-                                        width="16"
-                                        height="16"
-                                        viewBox="0 0 24 24"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        strokeWidth="2"
-                                    >
-                                        <polyline points="6 9 12 15 18 9"></polyline>
-                                    </svg>
-                                </button>
-                                {isBasicInfoExpanded && (
-                                    <div className="create-form-collapsible-content">
-                                        {fields.map((field) => (
-                                            <div key={field.name} className="create-form-field">
-                                                <label className="create-form-label">
-                                                    {field.label}
-                                                    {field.required && <span className="create-form-required">*</span>}
-                                                </label>
-                                                {field.type === 'textarea' ? (
-                                                    <textarea
-                                                        className="create-form-input"
-                                                        value={formData[field.name] || ''}
-                                                        onChange={(e) => handleChange(field.name, e.target.value)}
-                                                        rows={4}
-                                                        required={field.required}
-                                                        placeholder={`请输入${field.label}`}
-                                                    />
-                                                ) : field.type === 'select' ? (
-                                                    <select
-                                                        className="create-form-input"
-                                                        value={formData[field.name] || ''}
-                                                        onChange={(e) => handleChange(field.name, e.target.value)}
-                                                        required={field.required}
-                                                    >
-                                                        <option value="">请选择</option>
-                                                        {field.options?.map((option) => (
-                                                            <option key={option} value={option}>{option}</option>
-                                                        ))}
-                                                    </select>
+                        <div className="studio-ws-oc-detail create-form-oc-detail">
+                            <div className="studio-ws-oc-detail-left" aria-label="主图位">
+                                <div className="studio-ws-oc-image-panel create-form-oc-cover-hint">
+                                    <div className="create-form-oc-cover-placeholder" aria-hidden />
+                                    <p className="studio-ws-oc-image-caption">主封面在下一步「封面与发布」上传，此处对应详情页左侧大图区域。</p>
+                                </div>
+                            </div>
+                            <div className="studio-ws-oc-detail-right">
+                                <div className="studio-ws-oc-info-scroll">
+                                    <div className="artwork-detail-card create-form-oc-main-card">
+                                        <div className="artwork-detail-author-section">
+                                            <div className="artwork-detail-author-header">
+                                                {user?.avatarUrl ? (
+                                                    <img src={user.avatarUrl} alt="" className="artwork-detail-author-avatar" />
                                                 ) : (
-                                                    <input
-                                                        className="create-form-input"
-                                                        type={field.type}
-                                                        value={formData[field.name] || ''}
-                                                        onChange={(e) => handleChange(field.name, e.target.value)}
-                                                        required={field.required}
-                                                        placeholder={field.name === 'tags' ? '多个标签用逗号分隔，仅作展示' : `请输入${field.label}`}
-                                                    />
+                                                    <div
+                                                        className="artwork-detail-author-avatar studio-ws-oc-author-avatar-fallback"
+                                                        aria-hidden
+                                                    >
+                                                        {(user?.username ?? "?").slice(0, 1)}
+                                                    </div>
                                                 )}
+                                                <div className="artwork-detail-author-info">
+                                                    <div className="artwork-detail-author-name-row">
+                                                        <span className="artwork-detail-author-name">{user?.username ?? "创作者"}</span>
+                                                    </div>
+                                                    <div className="artwork-detail-author-bio">
+                                                        {user?.bio?.trim() || "在个人资料中可补充签名"}
+                                                    </div>
+                                                </div>
                                             </div>
-                                        ))}
-                                        
-                                        {/* 自定义标签 - 在基本信息内 */}
-                                        <div className="create-form-tags-section">
-                                            {customTags.length > 0 && (
-                                                <div className="create-form-tags">
-                                                    {customTags.map((tag) => (
-                                                        <div key={tag.id} className="create-form-tag-item">
-                                                            <div className="create-form-tag-header">
-                                                                <span className="create-form-tag-name">{tag.name}</span>
-                                                                <button
-                                                                    type="button"
-                                                                    className="create-form-tag-remove"
-                                                                    onClick={() => handleRemoveTag(tag.id)}
-                                                                >
-                                                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                                        <line x1="18" y1="6" x2="6" y2="18"></line>
-                                                                        <line x1="6" y1="6" x2="18" y2="18"></line>
-                                                                    </svg>
-                                                                </button>
-                                                            </div>
-                                                            {tag.content && (
-                                                                <div className="create-form-tag-content">{tag.content}</div>
-                                                            )}
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            )}
-                                            
-                                            {showTagInput ? (
-                                                <div className="create-form-tag-input-container">
-                                                    <div className="create-form-tag-input-row">
-                                                        <input
-                                                            type="text"
-                                                            className="create-form-tag-input"
-                                                            value={newTagName}
-                                                            onChange={(e) => setNewTagName(e.target.value)}
-                                                            placeholder="标签名称"
-                                                            autoFocus
-                                                        />
-                                                    </div>
-                                                    <div className="create-form-tag-input-row">
-                                                        <input
-                                                            type="text"
-                                                            className="create-form-tag-input"
-                                                            value={newTagContent}
-                                                            onChange={(e) => setNewTagContent(e.target.value)}
-                                                            placeholder="标签内容"
-                                                            onKeyDown={(e) => {
-                                                                if (e.key === 'Enter') {
-                                                                    e.preventDefault();
-                                                                    handleAddTag();
-                                                                } else if (e.key === 'Escape') {
-                                                                    setShowTagInput(false);
-                                                                    setNewTagName('');
-                                                                    setNewTagContent('');
-                                                                }
-                                                            }}
-                                                        />
-                                                    </div>
-                                                    <div className="create-form-tag-input-actions">
-                                                        <button
-                                                            type="button"
-                                                            className="create-form-tag-confirm"
-                                                            onClick={handleAddTag}
-                                                        >
-                                                            确认
-                                                        </button>
-                                                        <button
-                                                            type="button"
-                                                            className="create-form-tag-cancel"
-                                                            onClick={() => {
-                                                                setShowTagInput(false);
-                                                                setNewTagName('');
-                                                                setNewTagContent('');
-                                                            }}
-                                                        >
-                                                            取消
-                                                        </button>
-                                                    </div>
-                                                </div>
-                                            ) : (
-                                                <button
-                                                    type="button"
-                                                    className="create-form-add-tag-btn"
-                                                    onClick={() => setShowTagInput(true)}
-                                                >
-                                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                        <line x1="12" y1="5" x2="12" y2="19"></line>
-                                                        <line x1="5" y1="12" x2="19" y2="12"></line>
-                                                    </svg>
-                                                    添加自定义标签
-                                                </button>
-                                            )}
+                                            <p className="studio-ws-oc-phantom-hint">点赞与收藏在发布后的详情页使用</p>
                                         </div>
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* OC关系 - 可折叠 */}
-                            <div className="create-form-collapsible-section">
-                                <button
-                                    type="button"
-                                    className="create-form-collapsible-header"
-                                    onClick={() => setIsOCRelationExpanded(!isOCRelationExpanded)}
-                                >
-                                    <span className="create-form-collapsible-title">OC关系</span>
-                                    <svg
-                                        className={`create-form-collapsible-arrow ${isOCRelationExpanded ? 'expanded' : ''}`}
-                                        width="16"
-                                        height="16"
-                                        viewBox="0 0 24 24"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        strokeWidth="2"
-                                    >
-                                        <polyline points="6 9 12 15 18 9"></polyline>
-                                    </svg>
-                                </button>
-                                {isOCRelationExpanded && (
-                                    <div className="create-form-collapsible-content">
-                                        {ocRelations.length > 0 && (
-                                            <div className="create-form-relations">
-                                                {ocRelations.map((relation) => (
-                                                    <div key={relation.id} className="create-form-relation-item">
-                                                        <div className="create-form-relation-info">
-                                                            <span className="create-form-relation-name">{relation.name}</span>
-                                                            <span className="create-form-relation-type">{relation.relation}</span>
-                                                        </div>
-                                                        <button
-                                                            type="button"
-                                                            className="create-form-relation-remove"
-                                                            onClick={() => handleRemoveRelation(relation.id)}
-                                                        >
-                                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                                <line x1="18" y1="6" x2="6" y2="18"></line>
-                                                                <line x1="6" y1="6" x2="18" y2="18"></line>
-                                                            </svg>
-                                                        </button>
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        )}
-                                        {showRelationInput ? (
-                                            <div className="create-form-relation-input-container">
-                                                <div className="create-form-tag-input-row">
+                                        <div className="artwork-detail-work-section">
+                                            {titleField ? (
+                                                <div className="create-form-field studio-ws-oc-title-field">
+                                                    <label className="create-form-label" htmlFor="cf-oc-name">
+                                                        {titleField.label}
+                                                        {titleField.required ? <span className="create-form-required">*</span> : null}
+                                                    </label>
                                                     <input
+                                                        id="cf-oc-name"
+                                                        className="create-form-input create-form-oc-title-input"
                                                         type="text"
-                                                        className="create-form-tag-input"
-                                                        value={newRelationName}
-                                                        onChange={(e) => setNewRelationName(e.target.value)}
-                                                        placeholder="OC名称"
-                                                        autoFocus
+                                                        value={String(formData[titleField.name] ?? "")}
+                                                        onChange={(e) => handleChange(titleField.name, e.target.value)}
+                                                        required={titleField.required}
+                                                        placeholder={studioFieldPlaceholder(titleField)}
                                                     />
                                                 </div>
-                                                <div className="create-form-tag-input-row">
-                                                    <input
-                                                        type="text"
-                                                        className="create-form-tag-input"
-                                                        value={newRelationType}
-                                                        onChange={(e) => setNewRelationType(e.target.value)}
-                                                        placeholder="关系类型"
-                                                        onKeyDown={(e) => {
-                                                            if (e.key === 'Enter') {
-                                                                e.preventDefault();
-                                                                handleAddRelation();
-                                                            } else if (e.key === 'Escape') {
-                                                                setShowRelationInput(false);
-                                                                setNewRelationName('');
-                                                                setNewRelationType('');
-                                                            }
-                                                        }}
-                                                    />
-                                                </div>
-                                                <div className="create-form-tag-input-actions">
-                                                    <button
-                                                        type="button"
-                                                        className="create-form-tag-confirm"
-                                                        onClick={handleAddRelation}
-                                                    >
-                                                        确认
-                                                    </button>
-                                                    <button
-                                                        type="button"
-                                                        className="create-form-tag-cancel"
-                                                        onClick={() => {
-                                                            setShowRelationInput(false);
-                                                            setNewRelationName('');
-                                                            setNewRelationType('');
-                                                        }}
-                                                    >
-                                                        取消
-                                                    </button>
-                                                </div>
-                                            </div>
-                                        ) : (
-                                            <button
-                                                type="button"
-                                                className="create-form-add-relation-btn"
-                                                onClick={() => setShowRelationInput(true)}
-                                            >
-                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                    <line x1="12" y1="5" x2="12" y2="19"></line>
-                                                    <line x1="5" y1="12" x2="19" y2="12"></line>
-                                                </svg>
-                                                添加OC关系
-                                            </button>
-                                        )}
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* 添加模块 - 可折叠 */}
-                            <div className="create-form-collapsible-section">
-                                <button
-                                    type="button"
-                                    className="create-form-collapsible-header"
-                                    onClick={() => setIsModuleSelectorExpanded(!isModuleSelectorExpanded)}
-                                >
-                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                        <line x1="12" y1="5" x2="12" y2="19"></line>
-                                        <line x1="5" y1="12" x2="19" y2="12"></line>
-                                    </svg>
-                                    <span className="create-form-collapsible-title">添加模块</span>
-                                    <svg
-                                        className={`create-form-collapsible-arrow ${isModuleSelectorExpanded ? 'expanded' : ''}`}
-                                        width="16"
-                                        height="16"
-                                        viewBox="0 0 24 24"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        strokeWidth="2"
-                                    >
-                                        <polyline points="6 9 12 15 18 9"></polyline>
-                                    </svg>
-                                </button>
-                                {isModuleSelectorExpanded && (
-                                    <div className="create-form-collapsible-content">
-                                        <div className="create-form-module-selector">
-                                            {availableModules.map((module) => (
-                                                <button
-                                                    key={module}
-                                                    type="button"
-                                                    className={`create-form-module-option ${addedModules.includes(module) ? 'added' : ''}`}
-                                                    onClick={() => {
-                                                        if (addedModules.includes(module)) {
-                                                            handleRemoveModule(module);
-                                                        } else {
-                                                            handleAddModule(module);
-                                                        }
-                                                    }}
-                                                >
-                                                    {module}
-                                                    {addedModules.includes(module) && (
-                                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                                            <polyline points="20 6 9 17 4 12"></polyline>
-                                                        </svg>
-                                                    )}
-                                                </button>
-                                            ))}
+                                            ) : null}
+                                            {ocMetaFields.length > 0 ? (
+                                                <div className="studio-ws-oc-meta-grid">{ocMetaFields.map((field) => renderField(field))}</div>
+                                            ) : null}
+                                            {ocRoleIntroField ? renderField(ocRoleIntroField) : null}
                                         </div>
                                     </div>
-                                )}
+
+                                    <div className="artwork-detail-card">
+                                        <h3 className="artwork-detail-section-title">所属世界观</h3>
+                                        <p className="create-form-module-hint">
+                                            请从顶部菜单进入「工作站」创建 OC：在表单内通过「选择所属世界观」绑定一个世界观（我的或全站搜索）。
+                                        </p>
+                                    </div>
+
+                                    <div className="artwork-detail-card">
+                                        <h3 className="artwork-detail-section-title">标签</h3>
+                                        <OcTagsPanel
+                                            value={String(formData.tags ?? "")}
+                                            onChange={(v) => handleChange("tags", v)}
+                                        />
+                                    </div>
+                                </div>
                             </div>
-                        </>
+                        </div>
                     ) : (
-                        // 非OC类别的表单保持原样
-                        fields.map((field) => (
-                            <div key={field.name} className="create-form-field">
-                                <label className="create-form-label">
-                                    {field.label}
-                                    {field.required && <span className="create-form-required">*</span>}
-                                </label>
-                                {field.type === 'textarea' ? (
-                                    <textarea
-                                        className="create-form-input"
-                                        value={formData[field.name] || ''}
-                                        onChange={(e) => handleChange(field.name, e.target.value)}
-                                        rows={4}
-                                        required={field.required}
-                                        placeholder={`请输入${field.label}`}
-                                    />
-                                ) : field.type === 'select' ? (
-                                    <select
-                                        className="create-form-input"
-                                        value={formData[field.name] || ''}
-                                        onChange={(e) => handleChange(field.name, e.target.value)}
-                                        required={field.required}
-                                    >
-                                        <option value="">请选择</option>
-                                        {field.options?.map((option) => (
-                                            <option key={option} value={option}>{option}</option>
-                                        ))}
-                                    </select>
-                                ) : (
-                                    <input
-                                        className="create-form-input"
-                                        type={field.type}
-                                        value={formData[field.name] || ''}
-                                        onChange={(e) => handleChange(field.name, e.target.value)}
-                                        required={field.required}
-                                        placeholder={`请输入${field.label}`}
-                                    />
-                                )}
-                            </div>
-                        ))
+                        <div className="create-form-studio-card">
+                            <h3 className="create-form-studio-card-title">填写档案</h3>
+                            <p className="create-form-studio-card-desc">标 * 为必填；其余可按需填写，将一并写入作品详情。</p>
+                            {fields.map((field) => renderField(field))}
+                        </div>
                     )}
-                    
+
                     <div className="create-form-actions">
                         <button type="button" className="create-form-cancel" onClick={onClose}>
                             取消
                         </button>
                         <button type="submit" className="create-form-submit">
-                            {isOC ? '下一步' : '创建'}
+                            {onNext ? "下一步：封面与发布" : "创建"}
                         </button>
                     </div>
                 </form>

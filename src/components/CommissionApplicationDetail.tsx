@@ -16,12 +16,11 @@ import {
 import CommissionDeliverySubmitButton from "./CommissionDeliverySubmitButton";
 import CommissionPublisherDeliveryList from "./CommissionPublisherDeliveryList";
 import CommissionReviewPayerActions from "./CommissionReviewPayerActions";
-
-const API_BASE_URL = "http://localhost:3000";
+import { resolveApiUrl } from "../config/api";
 
 function normalizeCover(url: string | null | undefined): string | undefined {
     if (!url || typeof url !== "string") return undefined;
-    return url.startsWith("http") ? url : `${API_BASE_URL}${url}`;
+    return resolveApiUrl(url);
 }
 
 interface CommissionApplicationItem {

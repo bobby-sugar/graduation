@@ -105,7 +105,7 @@ export function getCommissionPipelineStep(app: CommissionApplicationLike): Commi
     const st = app.commission.status ?? "";
     if (app.kind === "outgoing-pending") return 1;
     if (app.kind === "incoming" && !app.handled) return 1;
-    if (st === "pending") return 1;
+    if (st === "pending" || st === "new") return 1;
     if (st === "payment-pending") return 2;
     if (st === "wip" || st === "revising") return 3;
     if (st === "review-pending") return 4;

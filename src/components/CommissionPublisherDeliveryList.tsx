@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-
-const API_BASE_URL = "http://localhost:3000";
+import { resolveApiUrl } from "../config/api";
 
 export interface PublisherDeliveryItem {
     messageId: number;
@@ -198,7 +197,7 @@ export default function CommissionPublisherDeliveryList({
                             {batch.files.map((f) => {
                                 const key = fileKey(batch.messageId, f.url);
                                 const busy = removingKey === key;
-                                const href = f.url.startsWith("http") ? f.url : `${API_BASE_URL}${f.url}`;
+                                const href = resolveApiUrl(f.url);
                                 return (
                                     <li key={key} className="commission-publisher-delivery-file-row">
                                         <a

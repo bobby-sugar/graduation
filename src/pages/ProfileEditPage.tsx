@@ -1,14 +1,10 @@
 import { useState, useEffect } from "react";
-import { Navigate, useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
+import { AuthPromptPanel } from "../components/auth/AuthPromptPanel";
+import { resolveApiUrl, toStorageUrl } from "../config/api";
 
-const API_BASE_URL = "http://localhost:3000";
-const DEFAULT_BACKGROUND = "https://images.unsplash.com/photo-1557683316-973673baf926?w=1920&h=640&fit=crop";
-
-function normalizeMediaUrl(url: string | null | undefined) {
-  if (!url) return "";
-  return url.startsWith("http") ? url : `${API_BASE_URL}${url}`;
-}
+const DEFAULT_BACKGROUND = "/me-default-background.png";
 
 export default function ProfileEditPage() {
   const { user, token, isReady, updateUser } = useAuth();
@@ -27,15 +23,17 @@ export default function ProfileEditPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const from = searchParams.get("from") ?? "/me";
+  const fromParam = searchParams.get("from") ?? "/me";
+  const from =
+    fromParam.startsWith("/") && !fromParam.startsWith("//") ? fromParam : "/me";
 
   useEffect(() => {
     if (user) {
       setUsername(user.username ?? "");
-      setAvatarUrl(normalizeMediaUrl(user.avatarUrl));
+      setAvatarUrl(resolveApiUrl(user.avatarUrl));
       setAvatarPositionX(user.avatarPositionX ?? 50);
       setAvatarPositionY(user.avatarPositionY ?? 50);
-      setBackgroundUrl(normalizeMediaUrl(user.profileBackgroundUrl));
+      setBackgroundUrl(resolveApiUrl(user.profileBackgroundUrl));
       setBackgroundPositionX(user.backgroundPositionX ?? 50);
       setBackgroundPositionY(user.backgroundPositionY ?? 50);
       setBio(user.bio ?? "");
@@ -44,7 +42,15 @@ export default function ProfileEditPage() {
   }, [user]);
 
   if (!isReady) return null;
-  if (!user) return <Navigate to={`/login?from=${encodeURIComponent("/profile/edit")}`} replace />;
+  if (!user) {
+    return (
+      <div className="oc-auth-gate-page">
+        <div className="oc-auth-gate-page__inner">
+          <AuthPromptPanel title="登录后编辑资料" description="登录后可修改头像、背景、签名与地区等展示信息。" />
+        </div>
+      </div>
+    );
+  }
 
   const uploadImage = async (file: File) => {
     if (!token) throw new Error("请先登录后上传图片");
@@ -57,7 +63,7 @@ export default function ProfileEditPage() {
     });
     if (!res.ok) throw new Error("图片上传失败");
     const data = await res.json();
-    return normalizeMediaUrl(data?.url ?? "");
+    return resolveApiUrl(data?.url ?? "");
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -67,13 +73,18 @@ export default function ProfileEditPage() {
     try {
       const res = await fetch(`/api/users/${user.id}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({
           username: username.trim(),
-          avatarUrl: avatarUrl.trim(),
+          avatarUrl: toStorageUrl(avatarUrl.trim()),
           avatarPositionX,
           avatarPositionY,
-          profileBackgroundUrl: backgroundUrl.trim() || null,
+          profileBackgroundUrl: backgroundUrl.trim()
+            ? toStorageUrl(backgroundUrl.trim())
+            : null,
           backgroundPositionX,
           backgroundPositionY,
           bio: bio.trim(),
@@ -82,13 +93,14 @@ export default function ProfileEditPage() {
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.message ?? "保存失败");
+        const msg = Array.isArray(err?.message) ? err.message.join("，") : err?.message;
+        throw new Error(typeof msg === "string" && msg.trim() ? msg : "保存失败");
       }
       const updated = await res.json();
       updateUser({
         id: updated.id,
         username: updated.username,
-        email: updated.email,
+        email: updated.email ?? user.email,
         avatarUrl: updated.avatarUrl ?? null,
         avatarPositionX: updated.avatarPositionX ?? 50,
         avatarPositionY: updated.avatarPositionY ?? 50,

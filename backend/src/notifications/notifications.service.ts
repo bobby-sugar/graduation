@@ -2,7 +2,7 @@ import { Injectable } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { ChatPushService } from "../realtime/chat-push.service";
 
-export type NotificationType = "like" | "comment" | "reply" | "mention";
+export type NotificationType = "like" | "comment_like" | "comment" | "reply";
 
 @Injectable()
 export class NotificationsService {
@@ -62,40 +62,39 @@ export class NotificationsService {
     return created;
   }
 
-  /** 评论中 @了某人时，通知被 @ 的用户 */
-  async createForMention(params: {
-    commentId: number;
-    artworkId: number;
-    fromUserId: number;
-    mentionedUserIds: number[];
-  }) {
-    const created = [];
-    const recipients: number[] = [];
-    for (const userId of params.mentionedUserIds) {
-      if (userId === params.fromUserId) continue;
-      const n = await this.prisma.notification.create({
-        data: {
-          type: "mention",
-          userId,
-          fromUserId: params.fromUserId,
-          artworkId: params.artworkId,
-          commentId: params.commentId,
-        },
-      });
-      created.push(n);
-      recipients.push(userId);
-    }
-    if (recipients.length > 0) {
-      this.chatPush.notifyNotificationRefresh(recipients);
-    }
+  /** 有人点赞了某条评论时，通知评论作者（与作品点赞区分） */
+  async createForCommentLiked(params: { commentId: number; fromUserId: number }) {
+    const comment = await this.prisma.comment.findUnique({
+      where: { id: params.commentId },
+      select: { userId: true, artworkId: true },
+    });
+    if (!comment) return null;
+    if (comment.userId === params.fromUserId) return null;
+    const created = await this.prisma.notification.create({
+      data: {
+        type: "comment_like",
+        userId: comment.userId,
+        fromUserId: params.fromUserId,
+        artworkId: comment.artworkId,
+        commentId: params.commentId,
+      },
+    });
+    this.chatPush.notifyNotificationRefresh([comment.userId]);
     return created;
   }
 
   async findLikesAndComments(userId: number, opts?: { unreadOnly?: boolean; onlyType?: NotificationType }) {
+    const only = opts?.onlyType;
+    const typeWhere =
+      only === "like"
+        ? { OR: [{ type: "like" }, { type: "comment_like" }] }
+        : only != null
+          ? { type: only }
+          : { type: { not: "mention" } };
     const list = await this.prisma.notification.findMany({
       where: {
         userId,
-        type: opts?.onlyType,
+        ...typeWhere,
         ...(opts?.unreadOnly ? { isRead: false } : {}),
       },
       include: {
@@ -104,12 +103,9 @@ export class NotificationsService {
       },
       orderBy: { createdAt: "desc" },
     });
-    // 评论/回复/提及类通知：按 commentId 取内容
+    // 评论/回复类通知：按 commentId 取内容
     const commentIds = list
-      .filter(
-        (n) =>
-          (n.type === "comment" || n.type === "reply" || n.type === "mention") && n.commentId != null,
-      )
+      .filter((n) => (n.type === "comment" || n.type === "reply" || n.type === "comment_like") && n.commentId != null)
       .map((n) => n.commentId!);
     const commentMap = new Map<number, { content: string }>();
     if (commentIds.length > 0) {
@@ -149,7 +145,7 @@ export class NotificationsService {
     }
     return list.map((n) => {
       let comment: { content: string } | null = null;
-      if (n.type === "comment" || n.type === "reply" || n.type === "mention") {
+      if (n.type === "comment" || n.type === "reply" || n.type === "comment_like") {
         if (n.commentId != null && commentMap.has(n.commentId)) {
           comment = commentMap.get(n.commentId)!;
         } else if (n.type === "comment") {
@@ -176,9 +172,8 @@ export class NotificationsService {
 
   async unreadLikesCommentsCount(userId: number) {
     const count = await this.prisma.notification.count({
-      where: { userId, isRead: false },
+      where: { userId, isRead: false, type: { not: "mention" } },
     });
     return { count };
   }
 }
-

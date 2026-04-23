@@ -58,6 +58,15 @@ export class JwtAuthGuard implements CanActivate {
       if (!user) {
         throw new UnauthorizedException("用户不存在");
       }
+      const sid = typeof payload.sid === "string" ? payload.sid.trim() : "";
+      if (sid) {
+        const session = await this.prisma.session.findFirst({
+          where: { id: sid, userId: subNum, revokedAt: null },
+        });
+        if (!session || session.expiresAt.getTime() <= Date.now()) {
+          throw new UnauthorizedException("登录已过期或无效，请重新登录");
+        }
+      }
       request.user = { ...user, sessionId: payload.sid };
       return true;
     } catch {

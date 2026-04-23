@@ -1,13 +1,15 @@
 import { useMemo, useRef, useState, type ChangeEvent, type FormEvent, useEffect } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
+import { AuthPromptPanel } from "../components/auth/AuthPromptPanel";
+import { useAuthPrompt } from "../contexts/AuthPromptContext";
+import { resolveApiUrl } from "../config/api";
 
 type Direction = "commission" | "offer";
 type CopyrightType = "个人使用" | "商用可用" | "买断版权";
 type DeliveryTime = "3天内" | "1周内" | "2周内" | "1个月内" | "可协商";
 type ResponseSpeed = "不限" | "24小时内" | "12小时内" | "6小时内";
 
-const API_BASE_URL = "http://localhost:3000";
 const EDIT_BACK_SKIP_PREFIX = "oc_commission_detail_skip_back_once:";
 const commissionTypeOptions = ["头像", "半身", "全身", "立绘", "场景", "Live2D", "UI设计"];
 const COMMISSION_TYPE_OTHER = "其他";
@@ -125,6 +127,7 @@ export default function CommissionEditPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { token } = useAuth();
+  const { openAuthPrompt } = useAuthPrompt();
   const imageInputRef = useRef<HTMLInputElement>(null);
   const cropEditorRef = useRef<HTMLDivElement>(null);
   const dragStartRef = useRef<{ x: number; y: number; originX: number; originY: number } | null>(null);
@@ -186,9 +189,7 @@ export default function CommissionEditPage() {
         }
         const imageUrl =
           typeof raw.previewImageUrl === "string" && raw.previewImageUrl.length > 0
-            ? raw.previewImageUrl.startsWith("http")
-              ? raw.previewImageUrl
-              : `${API_BASE_URL}${raw.previewImageUrl}`
+            ? resolveApiUrl(raw.previewImageUrl)
             : null;
         const sourceStore = getEditSourceStore();
         const cachedSource = id ? sourceStore[id] : undefined;
@@ -336,7 +337,12 @@ export default function CommissionEditPage() {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!id || !token) {
-      setError("请先登录后再编辑");
+      if (!token) {
+        openAuthPrompt({
+          title: "登录后保存修改",
+          description: "登录后可继续编辑并保存稿件信息。",
+        });
+      }
       return;
     }
     if (!isEditable) {
@@ -422,6 +428,23 @@ export default function CommissionEditPage() {
     return (
       <div className="commission-create-page">
         <div className="commission-create-card">加载中...</div>
+      </div>
+    );
+  }
+
+  if (!token) {
+    return (
+      <div className="oc-auth-gate-page">
+        <div className="oc-auth-gate-page__inner">
+          <button
+            type="button"
+            className="commission-detail-back oc-auth-gate-page__back"
+            onClick={() => navigate(-1)}
+          >
+            返回
+          </button>
+          <AuthPromptPanel title="登录后编辑稿件" description="登录后可修改自己发布的约稿/接稿信息与封面。" />
+        </div>
       </div>
     );
   }

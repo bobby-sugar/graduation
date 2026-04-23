@@ -1,5 +1,6 @@
 import "reflect-metadata";
 import { join } from "path";
+import { ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { NestExpressApplication } from "@nestjs/platform-express";
 import { IoAdapter } from "@nestjs/platform-socket.io";
@@ -12,8 +13,23 @@ async function bootstrap() {
   // 统一 API 前缀
   app.setGlobalPrefix("api");
 
-  // 开启 CORS，方便前端本地开发调用
-  app.enableCors();
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true,
+      forbidNonWhitelisted: false,
+    }),
+  );
+
+  const corsOrigins = (process.env.CORS_ORIGIN ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  app.enableCors(
+    corsOrigins.length > 0
+      ? { origin: corsOrigins, credentials: true }
+      : { origin: true },
+  );
 
   // 静态文件托管，将 backend/uploads 暴露为 /uploads 前缀
   app.useStaticAssets(join(__dirname, "..", "uploads"), {

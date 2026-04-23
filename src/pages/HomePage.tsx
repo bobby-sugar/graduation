@@ -1,17 +1,20 @@
-import { useState, useMemo, useRef, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useState, useMemo, useRef, useEffect, useLayoutEffect } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import Card from "../components/Card";
 import type { Artwork, SortOption, DimensionOption, CategoryOption } from "../types";
 import { useAuth } from "../contexts/AuthContext";
+import { AuthPromptPanel } from "../components/auth/AuthPromptPanel";
+import { useHomeSearch } from "../contexts/HomeSearchContext";
+import { API_BASE_URL, resolveApiUrl } from "../config/api";
+import { buildArtworkCloseState } from "../artwork/artworkDetailNavigation";
 
 interface CardPosition {
     column: number;
     top: number;
 }
 
-const RECOMMENDED_CACHE_PREFIX = "oc_home_recommended_cache_v1";
 const HOME_VIEW_STATE_KEY = "oc_home_view_state_v1";
-const categoryOptions: CategoryOption[] = ['my-works', 'following', 'recommended', 'oc', 'worldview', 'nienien', 'emoji', 'novel', 'comic'];
+const categoryOptions: CategoryOption[] = ['my-works', 'following', 'recommended', 'oc', 'worldview', 'emoji'];
 
 const categoryLabels: Record<CategoryOption, string> = {
     'my-works': '我的作品',
@@ -19,20 +22,21 @@ const categoryLabels: Record<CategoryOption, string> = {
     'recommended': '推荐',
     'oc': 'OC',
     'worldview': '世界观',
-    'nienien': '捏捏',
     'emoji': '表情包',
-    'novel': '小说',
-    'comic': '漫画',
 };
 
-const mapApiToArtwork = (item: any, API_BASE_URL: string): Artwork => {
+const mapApiToArtwork = (item: any): Artwork => {
     const rawUrl = item.imageUrl;
     let imageUrl = "";
     if (typeof rawUrl === "string" && rawUrl.length > 0) {
-        imageUrl = rawUrl.startsWith("http") ? rawUrl : `${API_BASE_URL}${rawUrl}`;
+        imageUrl = resolveApiUrl(rawUrl);
     }
     return {
         id: item.id,
+        authorId:
+            typeof item.authorId === "number"
+                ? item.authorId
+                : (typeof item.author?.id === "number" ? item.author.id : undefined),
         title: item.title,
         author: item.author?.username ?? "未知作者",
         authorAvatar: item.author?.avatarUrl ?? null,
@@ -42,6 +46,8 @@ const mapApiToArtwork = (item: any, API_BASE_URL: string): Artwork => {
         commentCount: item.commentCount ?? 0,
         createdAt: item.createdAt ?? new Date().toISOString(),
         category: item.category,
+        description: item.description ?? null,
+        tags: item.tags ?? null,
         isLiked: item.isLiked,
         isCommented: item.isCommented,
         hasViewed: item.hasViewed,
@@ -50,7 +56,9 @@ const mapApiToArtwork = (item: any, API_BASE_URL: string): Artwork => {
 
 export default function HomePage() {
     const navigate = useNavigate();
-    const { token, user } = useAuth();
+    const location = useLocation();
+    const { token } = useAuth();
+    const { debouncedQuery } = useHomeSearch();
     const [artworks, setArtworks] = useState<Artwork[]>([]);
     const [sortBy] = useState<SortOption>("latest");
     const [dimension] = useState<DimensionOption>("all");
@@ -59,8 +67,12 @@ export default function HomePage() {
             const raw = sessionStorage.getItem(HOME_VIEW_STATE_KEY);
             if (!raw) return "recommended";
             const parsed = JSON.parse(raw) as { category?: string } | null;
-            if (parsed?.category && categoryOptions.includes(parsed.category as CategoryOption)) {
-                return parsed.category as CategoryOption;
+            const saved = parsed?.category;
+            if (saved === "nienien") return "oc";
+            if (saved === "novel") return "recommended";
+            if (saved === "comic") return "oc";
+            if (saved && categoryOptions.includes(saved as CategoryOption)) {
+                return saved as CategoryOption;
             }
         } catch {
             // ignore
@@ -68,14 +80,13 @@ export default function HomePage() {
         return "recommended";
     });
     const containerRef = useRef<HTMLDivElement>(null);
+    const homeSubnavRef = useRef<HTMLDivElement>(null);
+    const [homeSubnavIndicator, setHomeSubnavIndicator] = useState({ left: 0, width: 0 });
     const cardRefs = useRef<Map<number, HTMLDivElement>>(new Map());
     const [columnCount, setColumnCount] = useState(4);
     const [cardPositions, setCardPositions] = useState<Map<number, CardPosition>>(new Map());
     const [containerHeight, setContainerHeight] = useState(0);
     const hasRestoredScrollRef = useRef(false);
-    // 后端服务基础地址，用于拼接图片等静态资源 URL
-    const API_BASE_URL = "http://localhost:3000";
-    const recommendedCacheKey = `${RECOMMENDED_CACHE_PREFIX}:${user?.id ?? "guest"}`;
 
     const saveHomeViewState = () => {
         sessionStorage.setItem(
@@ -87,6 +98,31 @@ export default function HomePage() {
             }),
         );
     };
+
+    useLayoutEffect(() => {
+        const updateIndicator = () => {
+            const container = homeSubnavRef.current;
+            if (!container) return;
+            const activeLink = container.querySelector(".navbar-link.active") as HTMLElement | null;
+            if (activeLink) {
+                const containerRect = container.getBoundingClientRect();
+                const linkRect = activeLink.getBoundingClientRect();
+                setHomeSubnavIndicator({
+                    left: linkRect.left - containerRect.left,
+                    width: linkRect.width,
+                });
+            } else {
+                setHomeSubnavIndicator({ left: 0, width: 0 });
+            }
+        };
+        updateIndicator();
+        const timer = setTimeout(updateIndicator, 0);
+        window.addEventListener("resize", updateIndicator);
+        return () => {
+            clearTimeout(timer);
+            window.removeEventListener("resize", updateIndicator);
+        };
+    }, [category]);
 
     // 计算列数 - 目标是一排显示5个卡片
     useEffect(() => {
@@ -128,13 +164,16 @@ export default function HomePage() {
         };
     }, []);
 
-    // 推荐 / 我的作品 / 关注 用专用接口，其余用全部列表
+    // 推荐 / 我的作品 / 关注 / 顶栏全站搜索 分路请求
     useEffect(() => {
+        let cancelled = false;
+        const q = debouncedQuery;
+
         const fetchArtworks = async () => {
             try {
                 if (category === "my-works" || category === "following") {
                     if (!token) {
-                        setArtworks([]);
+                        if (!cancelled) setArtworks([]);
                         return;
                     }
                     const url = category === "my-works" ? "/api/artworks/mine" : "/api/artworks/following";
@@ -145,25 +184,27 @@ export default function HomePage() {
                         throw new Error(`获取作品失败: ${res.status}`);
                     }
                     const data = await res.json();
-                    const mapped: Artwork[] = (data || []).map((item: any) => mapApiToArtwork(item, API_BASE_URL));
+                    if (cancelled) return;
+                    const mapped: Artwork[] = (data || []).map((item: any) => mapApiToArtwork(item));
                     setArtworks(mapped);
                     return;
                 }
-                const isRecommended = category === "recommended";
-                let cachedOrderIds: number[] | null = null;
-                if (isRecommended) {
-                    try {
-                        const cachedRaw = sessionStorage.getItem(recommendedCacheKey);
-                        if (cachedRaw) {
-                            const cached = JSON.parse(cachedRaw) as { orderIds?: number[] } | null;
-                            if (Array.isArray(cached?.orderIds) && cached.orderIds.length > 0) {
-                                cachedOrderIds = cached.orderIds.filter((id) => Number.isInteger(id));
-                            }
-                        }
-                    } catch {
-                        sessionStorage.removeItem(recommendedCacheKey);
+
+                if (q) {
+                    const headers: HeadersInit = {};
+                    if (token) headers.Authorization = `Bearer ${token}`;
+                    const res = await fetch(`/api/artworks/search?q=${encodeURIComponent(q)}`, { headers });
+                    if (!res.ok) {
+                        throw new Error(`搜索失败: ${res.status}`);
                     }
+                    const data = await res.json();
+                    if (cancelled) return;
+                    const mapped: Artwork[] = (data || []).map((item: any) => mapApiToArtwork(item));
+                    setArtworks(mapped);
+                    return;
                 }
+
+                const isRecommended = category === "recommended";
                 const url = isRecommended ? "/api/artworks/recommended" : "/api/artworks";
                 const headers: HeadersInit = {};
                 if (token) headers.Authorization = `Bearer ${token}`;
@@ -172,51 +213,45 @@ export default function HomePage() {
                     throw new Error(`获取作品失败: ${res.status}`);
                 }
                 const data = await res.json();
-                const mapped: Artwork[] = (data || []).map((item: any) => mapApiToArtwork(item, API_BASE_URL));
-                if (isRecommended) {
-                    const orderIndex = new Map<number, number>(
-                        (cachedOrderIds ?? []).map((id, index) => [id, index]),
-                    );
-                    const ordered = cachedOrderIds && cachedOrderIds.length > 0
-                        ? [...mapped].sort((a, b) => {
-                            const ia = orderIndex.get(a.id);
-                            const ib = orderIndex.get(b.id);
-                            if (ia != null && ib != null) return ia - ib;
-                            if (ia != null) return -1;
-                            if (ib != null) return 1;
-                            return b.id - a.id;
-                        })
-                        : mapped;
-                    setArtworks(ordered);
-                    sessionStorage.setItem(
-                        recommendedCacheKey,
-                        JSON.stringify({
-                            savedAt: Date.now(),
-                            orderIds: ordered.map((item) => item.id),
-                        }),
-                    );
-                    return;
-                }
+                if (cancelled) return;
+                const mapped: Artwork[] = (data || []).map((item: any) => mapApiToArtwork(item));
+                /** 推荐顺序完全以接口为准。旧逻辑曾用 sessionStorage 缓存 orderIds 并重排，导致新作品 ID 不在缓存中时被一律排到队尾。 */
                 setArtworks(mapped);
             } catch (error) {
                 // eslint-disable-next-line no-console
                 console.error(error);
+                if (!cancelled) setArtworks([]);
             }
         };
 
         fetchArtworks();
-    }, [category, token, recommendedCacheKey]);
+        return () => {
+            cancelled = true;
+        };
+    }, [category, token, debouncedQuery]);
 
-    // 排序和筛选逻辑：推荐 tab 使用后端返回的推荐顺序，其他 tab 做分类筛选 + 前端排序
+    // 排序和筛选：推荐无搜索时保持接口顺序；有搜索时按时间。我的/关注在本地按关键字再筛。
     const filteredAndSortedArtworks = useMemo(() => {
-        let filtered = [...artworks];
+        let filtered = [...artworks].filter((art) => (art.category ?? "").toLowerCase() !== "novel");
+        const qLower = debouncedQuery.trim().toLowerCase();
 
         if (category === "recommended") {
+            if (!qLower) {
+                return filtered;
+            }
+            filtered.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
             return filtered;
         }
 
         if (category === "my-works" || category === "following") {
-            // 我的作品 / 关注：后续可接用户数据筛选，此处暂不筛
+            if (qLower) {
+                filtered = filtered.filter(
+                    (art) =>
+                        art.title.toLowerCase().includes(qLower) ||
+                        art.author.toLowerCase().includes(qLower) ||
+                        (art.category && String(art.category).toLowerCase().includes(qLower)),
+                );
+            }
         } else {
             filtered = filtered.filter((art) => art.category === category);
         }
@@ -238,7 +273,7 @@ export default function HomePage() {
         }
 
         return filtered;
-    }, [sortBy, dimension, category, artworks]);
+    }, [sortBy, dimension, category, artworks, debouncedQuery]);
 
     // 计算瀑布流布局
     useEffect(() => {
@@ -351,31 +386,64 @@ export default function HomePage() {
         return { columnWidth: width, gap: gapValue, paddingLeft: paddingLeftValue };
     }, [columnCount]);
 
-    return (
-        <div className="homepage">
-            {/* 筛选栏区域 */}
-            <div className="homepage-filter-bar">
-                <div className="filter-bar-container">
-                    {categoryOptions.map((cat) => (
-                        <button
-                            key={cat}
-                            className={`filter-bar-button ${category === cat ? 'active' : ''}`}
-                            onClick={() => setCategory(cat)}
-                        >
-                            {categoryLabels[cat]}
-                        </button>
-                    ))}
-                </div>
-            </div>
+    const showSearchEmpty =
+        debouncedQuery.trim().length > 0 &&
+        filteredAndSortedArtworks.length === 0 &&
+        !((category === "my-works" || category === "following") && !token);
 
-            {/* 未登录时「我的作品」「关注」提示 */}
-            {(category === "my-works" || category === "following") && !token && (
-                <div className="homepage-auth-hint">
-                    {category === "my-works" ? "请登录后查看我的作品" : "请登录后查看关注作者的作品"}
+    const guestNeedsHomeAuth = (category === "my-works" || category === "following") && !token;
+
+    return (
+        <div className={`homepage${guestNeedsHomeAuth ? " homepage--guest-auth" : ""}`}>
+            <header className="home-subnav" aria-label="作品分类">
+                <div className="navbar-container home-subnav-container">
+                    <div className="navbar-main home-subnav-main" ref={homeSubnavRef}>
+                        <div
+                            className="navbar-indicator"
+                            style={{
+                                left: `${homeSubnavIndicator.left}px`,
+                                width: `${homeSubnavIndicator.width}px`,
+                                opacity: homeSubnavIndicator.width > 0 ? 1 : 0,
+                            }}
+                        />
+                        {categoryOptions.map((cat) => (
+                            <button
+                                key={cat}
+                                type="button"
+                                className={`navbar-link home-subnav-link ${category === cat ? "active" : ""}`}
+                                onClick={() => setCategory(cat)}
+                            >
+                                {categoryLabels[cat]}
+                            </button>
+                        ))}
+                    </div>
                 </div>
-            )}
+            </header>
+
+            {guestNeedsHomeAuth ? (
+                <div className="homepage-guest-auth-region">
+                    <div className="oc-auth-gate-page__inner">
+                        <AuthPromptPanel
+                            compact
+                            title={category === "my-works" ? "登录后查看我的作品" : "登录后查看关注动态"}
+                            description={
+                                category === "my-works"
+                                    ? "登录后即可在首页浏览你发布的全部作品。"
+                                    : "登录后可查看已关注作者的最新作品更新。"
+                            }
+                        />
+                    </div>
+                </div>
+            ) : null}
+
+            {!guestNeedsHomeAuth && showSearchEmpty ? (
+                <div className="homepage-search-empty" role="status">
+                    没有找到与「{debouncedQuery.trim()}」相关的作品，试试其它关键词或切换分类。
+                </div>
+            ) : null}
 
             {/* 卡片区域 */}
+            {!guestNeedsHomeAuth ? (
             <div 
                 ref={containerRef} 
                 className="artwork-masonry-container"
@@ -408,15 +476,20 @@ export default function HomePage() {
                         >
                             <Card
                                 artwork={artwork}
+                                apiBaseUrl={API_BASE_URL}
                                 onClick={() => {
                                     saveHomeViewState();
-                                    navigate(`/artwork/${artwork.id}`);
+                                    navigate(`/artwork/${artwork.id}`, {
+                                        state: buildArtworkCloseState(`${location.pathname}${location.search}`),
+                                    });
                                 }}
                             />
                         </div>
                     );
                 })}
             </div>
+            ) : null}
+
         </div>
     );
 }

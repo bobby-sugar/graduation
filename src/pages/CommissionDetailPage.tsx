@@ -5,15 +5,17 @@ import {
     readInboxCommissionRestoreForDetail,
 } from "../commissionInboxHelpers";
 import { useAuth } from "../contexts/AuthContext";
+import { useAuthPrompt } from "../contexts/AuthPromptContext";
 import CommissionDeliverySubmitButton from "../components/CommissionDeliverySubmitButton";
 import CommissionPublisherDeliveryList from "../components/CommissionPublisherDeliveryList";
 import CommissionReviewPayerActions from "../components/CommissionReviewPayerActions";
+import DetailPageCloseIcon from "../components/DetailPageCloseIcon";
+import { resolveApiUrl } from "../config/api";
 
 type CommissionStatus = 'new' | 'pending' | 'payment-pending' | 'wip' | 'review-pending' | 'revising' | 'done' | string;
 type PaymentStatus = 'unpaid' | 'paid' | 'partial' | 'hold' | string;
 type Direction = "commission" | "offer" | string;
 
-const API_BASE_URL = "http://localhost:3000";
 const EDIT_BACK_SKIP_PREFIX = "oc_commission_detail_skip_back_once:";
 
 interface CommissionDetail {
@@ -137,6 +139,7 @@ export default function CommissionDetailPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const { user, token } = useAuth();
+  const { openAuthPrompt } = useAuthPrompt();
   const [data, setData] = useState<CommissionDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState(false);
@@ -216,7 +219,7 @@ export default function CommissionDetailPage() {
         (raw as { previewImageUrl: string }).previewImageUrl.length > 0
           ? ((raw as { previewImageUrl: string }).previewImageUrl.startsWith("http")
               ? (raw as { previewImageUrl: string }).previewImageUrl
-              : `${API_BASE_URL}${(raw as { previewImageUrl: string }).previewImageUrl}`)
+              : resolveApiUrl((raw as { previewImageUrl: string }).previewImageUrl))
           : undefined;
 
       const mapped = mapApiToCommissionDetail(raw as Record<string, unknown>, imageUrl);
@@ -346,7 +349,15 @@ export default function CommissionDetailPage() {
       <div className="commission-detail-page">
         <div className="commission-detail-card">
           <p className="commission-detail-empty">未找到对应的稿件</p>
-          <button className="commission-detail-back" onClick={handleBack}>返回</button>
+          <button
+            type="button"
+            className="commission-detail-back commission-detail-back--close"
+            onClick={handleBack}
+            title="取消"
+            aria-label="取消"
+          >
+            <DetailPageCloseIcon />
+          </button>
         </div>
       </div>
     );
@@ -378,7 +389,7 @@ export default function CommissionDetailPage() {
     data.status === "new" ||
     (data.status === "pending" && !boundPublisherPayer);
   const waitingPublisherConfirm =
-    data.status === "pending" &&
+    (data.status === "pending" || data.status === "new") &&
     !isPublisher &&
     !isPayer &&
     data.viewerPendingApplication === true;
@@ -456,8 +467,10 @@ export default function CommissionDetailPage() {
 
   const handlePrivateChat = async () => {
     if (!token) {
-      alert("请先登录后再私信");
-      navigate("/login");
+      openAuthPrompt({
+        title: "登录后发起私信",
+        description: "登录后可与发布者私聊沟通稿件细节。",
+      });
       return;
     }
     if (!publisherId) {
@@ -479,8 +492,10 @@ export default function CommissionDetailPage() {
 
   const handleApply = async () => {
     if (!token) {
-      alert("请先登录后再申请");
-      navigate("/login");
+      openAuthPrompt({
+        title: "登录后申请承接",
+        description: "登录后可向发布方发送承接申请，并在消息中跟进进度。",
+      });
       return;
     }
     if (!id) {
@@ -636,7 +651,7 @@ export default function CommissionDetailPage() {
         const raw = await detailRes.json();
         const imageUrl: string | undefined =
           typeof raw.previewImageUrl === "string" && raw.previewImageUrl.length > 0
-            ? (raw.previewImageUrl.startsWith("http") ? raw.previewImageUrl : `${API_BASE_URL}${raw.previewImageUrl}`)
+            ? resolveApiUrl(raw.previewImageUrl)
             : undefined;
         const mapped = mapApiToCommissionDetail(raw, imageUrl);
         if (mapped) setData(mapped);
@@ -673,7 +688,7 @@ export default function CommissionDetailPage() {
         const raw = await detailRes.json();
         const imageUrl: string | undefined =
           typeof raw.previewImageUrl === "string" && raw.previewImageUrl.length > 0
-            ? (raw.previewImageUrl.startsWith("http") ? raw.previewImageUrl : `${API_BASE_URL}${raw.previewImageUrl}`)
+            ? resolveApiUrl(raw.previewImageUrl)
             : undefined;
         const mapped = mapApiToCommissionDetail(raw, imageUrl);
         if (mapped) setData(mapped);
@@ -711,7 +726,7 @@ export default function CommissionDetailPage() {
         const raw = await detailRes.json();
         const imageUrl: string | undefined =
           typeof raw.previewImageUrl === "string" && raw.previewImageUrl.length > 0
-            ? (raw.previewImageUrl.startsWith("http") ? raw.previewImageUrl : `${API_BASE_URL}${raw.previewImageUrl}`)
+            ? resolveApiUrl(raw.previewImageUrl)
             : undefined;
         const mapped = mapApiToCommissionDetail(raw, imageUrl);
         if (mapped) setData(mapped);
@@ -748,7 +763,7 @@ export default function CommissionDetailPage() {
         const raw = await detailRes.json();
         const imageUrl: string | undefined =
           typeof raw.previewImageUrl === "string" && raw.previewImageUrl.length > 0
-            ? (raw.previewImageUrl.startsWith("http") ? raw.previewImageUrl : `${API_BASE_URL}${raw.previewImageUrl}`)
+            ? resolveApiUrl(raw.previewImageUrl)
             : undefined;
         const mapped = mapApiToCommissionDetail(raw, imageUrl);
         if (mapped) setData(mapped);
@@ -815,7 +830,7 @@ export default function CommissionDetailPage() {
         const raw = await detailRes.json();
         const imageUrl: string | undefined =
           typeof raw.previewImageUrl === "string" && raw.previewImageUrl.length > 0
-            ? (raw.previewImageUrl.startsWith("http") ? raw.previewImageUrl : `${API_BASE_URL}${raw.previewImageUrl}`)
+            ? resolveApiUrl(raw.previewImageUrl)
             : undefined;
         const mapped = mapApiToCommissionDetail(raw, imageUrl);
         if (mapped) setData(mapped);
@@ -840,11 +855,14 @@ export default function CommissionDetailPage() {
     <div className="commission-detail-page">
       <div className="commission-detail-wrapper">
         <div className="commission-detail-main">
-          <button className="commission-detail-back" onClick={handleBack}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <polyline points="15 18 9 12 15 6"></polyline>
-            </svg>
-            返回
+          <button
+            type="button"
+            className="commission-detail-back commission-detail-back--close"
+            onClick={handleBack}
+            title="取消"
+            aria-label="取消"
+          >
+            <DetailPageCloseIcon />
           </button>
 
           <div className="commission-detail-card">

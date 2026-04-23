@@ -7,11 +7,15 @@ const prisma = new PrismaClient();
 async function main() {
   const uploadsDir = path.join(__dirname, "..", "uploads");
   const allFiles = fs.readdirSync(uploadsDir);
+  const byAvatarNumber = (name) => {
+    const match = name.match(/^avatar(\d+)\./i);
+    return match ? Number(match[1]) : Number.POSITIVE_INFINITY;
+  };
 
   // 优先使用 avatar* 命名的专用头像文件
   const dedicatedAvatarFiles = allFiles
     .filter((name) => /^avatar.*\.(jpg|jpeg|png|webp|gif)$/i.test(name))
-    .sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+    .sort((a, b) => byAvatarNumber(a) - byAvatarNumber(b) || a.localeCompare(b, "zh-Hans-CN"));
 
   // 再补充时间戳命名图片（兼容历史上传）
   const timestampAvatarFiles = allFiles

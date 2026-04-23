@@ -35,6 +35,7 @@ model User {
   artworkLikes     ArtworkLike[]
   favorites        Favorite[]
   viewsRecord      View[]
+  commentLikes     CommentLike[]
   notifications    Notification[] @relation("UserNotifications")
   notificationsFrom Notification[] @relation("UserFromNotifications")
   sessions         Session[]
@@ -106,7 +107,7 @@ model ConversationRead {
 model Artwork {
   id        Int      @id @default(autoincrement())
   title     String
-  description String?
+  description String? @db.Text
   imageUrl  String?
   category  String
   author    User     @relation(fields: [authorId], references: [id])
@@ -115,6 +116,8 @@ model Artwork {
   artistId  Int?
   tags      String?
   gender    String?
+  /// OC：可关联范围；worldview/emoji：列表可见性。public=全站可见；private=仅作者。其它类目可为 null。
+  ocPrivacy String?
   comments  Comment[]
   likes     Int      @default(0)
   views     Int      @default(0)
@@ -168,6 +171,19 @@ model Comment {
   likes         Int           @default(0)
   createdAt     DateTime      @default(now())
   notifications Notification[]
+  commentLikes  CommentLike[]
+}
+
+model CommentLike {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  commentId Int
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  comment   Comment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, commentId])
+  @@index([commentId])
 }
 
 model Notification {
@@ -217,4 +233,3 @@ model Commission {
   /// 承接方取消验收时写入；下载交付仅统计此时间之后产生的 __COMMISSION_DELIVERY__ 消息
   lastDeliveryRoundAt DateTime?
 }
-

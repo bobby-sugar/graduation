@@ -1,12 +1,17 @@
-import { useState, useEffect, useCallback, useRef } from "react";
-import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { io } from "socket.io-client";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import type { CSSProperties } from "react";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import MessageSidebar from "../components/MessageSidebar";
 import MessageList from "../components/MessageList";
 import MessageDetail from "../components/MessageDetail";
 import CommissionApplicationDetail from "../components/CommissionApplicationDetail";
-import { setInboxPageHandlesChatUnreadRefresh } from "../components/NotificationSocketBridge";
+import {
+    OC_CHAT_MESSAGE_EVENT,
+    setInboxPageHandlesChatUnreadRefresh,
+    type OcChatMessageDetail,
+} from "../components/NotificationSocketBridge";
 import { useAuth } from "../contexts/AuthContext";
+import { AuthPromptPanel } from "../components/auth/AuthPromptPanel";
 import {
     COMMISSION_STATUS_LABELS,
     clearInboxCommissionRestore,
@@ -15,12 +20,11 @@ import {
     peekInboxCommissionRestoreForInbox,
     type CommissionViewerRole,
 } from "../commissionInboxHelpers";
-
-const API_BASE_URL = "http://localhost:3000";
+import { resolveApiUrl } from "../config/api";
 
 function normalizeCommissionCover(url: string | null | undefined): string | undefined {
     if (!url || typeof url !== "string") return undefined;
-    return url.startsWith("http") ? url : `${API_BASE_URL}${url}`;
+    return resolveApiUrl(url);
 }
 
 /** 会话列表项（与 MessageList 的 Message 一致） */
@@ -33,6 +37,10 @@ export interface ConversationItem {
     timestamp: string;
     unreadCount: number;
     isPinned?: boolean;
+    /** 点赞/评论通知：用于右侧详情与跳转（仅通知分组使用） */
+    notificationArtworkId?: number;
+    notificationFromUserId?: number;
+    notificationType?: "like" | "comment_like" | "comment" | "reply";
 }
 
 /** 单条聊天消息（与 MessageDetail 的 ChatMessage 一致） */
@@ -44,7 +52,6 @@ export interface ChatMessage {
     content: string;
     timestamp: string;
     isOwn?: boolean;
-    ocArtworkId?: number;
 }
 
 interface CommissionApplicationItem {
@@ -91,9 +98,32 @@ function getAuthHeaders(token: string | null): Record<string, string> {
     return { Authorization: `Bearer ${token}` };
 }
 
+const INBOX_SIDEBAR_WIDTH_KEY = "oc_inbox_sidebar_width";
+
+function clampInboxSidebarWidth(widthPx: number, viewportWidth: number) {
+    const minW = 176;
+    const maxW = Math.max(minW + 8, Math.min(400, viewportWidth - 480));
+    return Math.min(maxW, Math.max(minW, Math.round(widthPx)));
+}
+
+function readStoredInboxSidebarWidth(): number {
+    if (typeof window === "undefined") return 240;
+    try {
+        const raw = localStorage.getItem(INBOX_SIDEBAR_WIDTH_KEY);
+        const v = raw ? parseInt(raw, 10) : NaN;
+        if (Number.isFinite(v)) return clampInboxSidebarWidth(v, window.innerWidth);
+    } catch {
+        /* ignore */
+    }
+    return 240;
+}
+
 function previewMessageText(content?: string) {
     const text = (content ?? "").trim();
     if (!text) return "暂无消息";
+    if (text.startsWith("__CHAT_IMAGE__")) {
+        return "【图片】";
+    }
     if (text.startsWith("__COMMISSION_APPLY_RESULT__")) {
         try {
             const payload = JSON.parse(text.replace("__COMMISSION_APPLY_RESULT__", ""));
@@ -204,6 +234,17 @@ function previewMessageText(content?: string) {
         }
         return "【接稿申请】";
     }
+    if (text.startsWith("__ARTWORK_SHARE__")) {
+        try {
+            const payload = JSON.parse(text.replace("__ARTWORK_SHARE__", ""));
+            if (payload?.type === "artwork_share" && typeof payload?.title === "string") {
+                return `【分享作品】${payload.title}`;
+            }
+        } catch {
+            return "【分享作品】";
+        }
+        return "【分享作品】";
+    }
     return text;
 }
 
@@ -220,12 +261,21 @@ export default function InboxPage() {
     useEffect(() => {
         activeTabRef.current = activeTab;
     }, [activeTab]);
+
+    /** 已移除「@我」侧栏项：旧状态或书签若仍为 mentions，切回全部通知 */
+    useEffect(() => {
+        if (activeTab === "mentions") {
+            setActiveTab("all-likes-comments");
+        }
+    }, [activeTab]);
     const [conversations, setConversations] = useState<ConversationItem[]>([]);
     const [notifications, setNotifications] = useState<ConversationItem[]>([]);
     /** 中间列表当前高亮项（会话 id 或通知 id） */
     const [selectedId, setSelectedId] = useState<string | undefined>();
     /** 右侧聊天面板显示的会话 id，切到点赞&评论时保持不变 */
     const [selectedConversationId, setSelectedConversationId] = useState<string | undefined>();
+    /** 供 fetchConversations 等回调读取当前选中会话，避免因依赖 selectedId 导致切换会话时整表重拉 */
+    const selectedConversationIdRef = useRef<string | undefined>(undefined);
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [commissionApplications, setCommissionApplications] = useState<CommissionApplicationItem[]>([]);
     const [confirmingCommissionAppId, setConfirmingCommissionAppId] = useState<number | null>(null);
@@ -266,9 +316,60 @@ export default function InboxPage() {
         likes: 0,
         comments: 0,
         replies: 0,
-        mentions: 0,
     });
     const selectionStorageKey = user?.id ? `oc_inbox_selected_conversation_${user.id}` : null;
+
+    const sidebarWidthRef = useRef(240);
+    const [sidebarWidth, setSidebarWidth] = useState(() => {
+        const w = readStoredInboxSidebarWidth();
+        sidebarWidthRef.current = w;
+        return w;
+    });
+
+    useEffect(() => {
+        sidebarWidthRef.current = sidebarWidth;
+    }, [sidebarWidth]);
+
+    useEffect(() => {
+        const onWin = () => {
+            setSidebarWidth((w) => clampInboxSidebarWidth(w, window.innerWidth));
+        };
+        window.addEventListener("resize", onWin);
+        return () => window.removeEventListener("resize", onWin);
+    }, []);
+
+    const inboxPageStyle = useMemo((): CSSProperties => {
+        return { ["--inbox-sidebar-width" as string]: `${sidebarWidth}px` };
+    }, [sidebarWidth]);
+
+    const onInboxSidebarResizeStart = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+        e.preventDefault();
+        const startX = e.clientX;
+        const startW = sidebarWidthRef.current;
+        let latest = startW;
+        const onMove = (ev: PointerEvent) => {
+            latest = clampInboxSidebarWidth(startW + (ev.clientX - startX), window.innerWidth);
+            sidebarWidthRef.current = latest;
+            setSidebarWidth(latest);
+        };
+        const end = () => {
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", end);
+            window.removeEventListener("pointercancel", end);
+            document.body.style.cursor = "";
+            document.body.style.userSelect = "";
+            try {
+                localStorage.setItem(INBOX_SIDEBAR_WIDTH_KEY, String(latest));
+            } catch {
+                /* ignore */
+            }
+        };
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", end);
+        window.addEventListener("pointercancel", end);
+        document.body.style.cursor = "col-resize";
+        document.body.style.userSelect = "none";
+    }, []);
 
     useEffect(() => {
         localStorage.setItem("oc_inbox_pinned_ids", JSON.stringify(Array.from(pinnedIds)));
@@ -302,6 +403,10 @@ export default function InboxPage() {
             sessionStorage.removeItem(selectionStorageKey);
         }
     }, [selectionStorageKey, selectedConversationId]);
+
+    useEffect(() => {
+        selectedConversationIdRef.current = selectedConversationId;
+    }, [selectedConversationId]);
 
     // 从稿件详情返回（或浏览器后退）：恢复「稿件消息」与选中行、右侧会话
     useEffect(() => {
@@ -343,7 +448,8 @@ export default function InboxPage() {
             }));
             setConversations(list);
             window.dispatchEvent(new Event("oc-conversations-updated"));
-            if (selectedConversationId && !list.some((c) => c.id === selectedConversationId)) {
+            const openCid = selectedConversationIdRef.current;
+            if (openCid && !list.some((c) => c.id === openCid)) {
                 setSelectedConversationId(undefined);
                 setSelectedId(undefined);
             }
@@ -353,7 +459,7 @@ export default function InboxPage() {
         } finally {
             setLoading(false);
         }
-    }, [token, pinnedIds, selectedConversationId]);
+    }, [token, pinnedIds]);
 
     const fetchNotificationBadgeCounts = useCallback(async () => {
         if (!token) return;
@@ -366,10 +472,10 @@ export default function InboxPage() {
             const unreadList = Array.isArray(data) ? data : [];
             const counts = unreadList.reduce(
                 (acc: Record<string, number>, n: any) => {
+                    if (n?.type === "mention") return acc;
                     acc["all-likes-comments"] += 1;
-                    if (n?.type === "like") acc.likes += 1;
+                    if (n?.type === "like" || n?.type === "comment_like") acc.likes += 1;
                     else if (n?.type === "reply") acc.replies += 1;
-                    else if (n?.type === "mention") acc.mentions += 1;
                     else acc.comments += 1;
                     return acc;
                 },
@@ -378,7 +484,6 @@ export default function InboxPage() {
                     likes: 0,
                     comments: 0,
                     replies: 0,
-                    mentions: 0,
                 },
             );
             setNotificationBadgeCountMap(counts);
@@ -415,6 +520,7 @@ export default function InboxPage() {
                     setSelectedConversationId(String(firstItem.conversationId));
                 } else if (selectedId && !currentIds.has(selectedId)) {
                     setSelectedId(undefined);
+                    setSelectedConversationId(undefined);
                 }
             }
         } catch (e) {
@@ -514,7 +620,7 @@ export default function InboxPage() {
         async (tab: string) => {
             if (!token) return;
             // 仅在 点赞&评论 分组的 tab 下请求通知
-            if (!["all-likes-comments", "likes", "comments", "replies", "mentions"].includes(tab)) {
+            if (!["all-likes-comments", "likes", "comments", "replies"].includes(tab)) {
                 setNotifications([]);
                 return;
             }
@@ -525,8 +631,6 @@ export default function InboxPage() {
                 params.set("type", "comment");
             } else if (tab === "replies") {
                 params.set("type", "reply");
-            } else if (tab === "mentions") {
-                params.set("type", "mention");
             }
             const url = `/api/notifications${params.toString() ? `?${params.toString()}` : ""}`;
             try {
@@ -536,54 +640,87 @@ export default function InboxPage() {
                 if (!res.ok) throw new Error("获取通知失败");
                 const data = await res.json();
                 const list: ConversationItem[] = (data || []).map((n: any) => {
-                    const isLike = n.type === "like";
+                    const isArtworkLike = n.type === "like";
+                    const isCommentLike = n.type === "comment_like";
                     const isReply = n.type === "reply";
-                    const isMention = n.type === "mention";
                     const fromName = n.fromUser?.username ?? "有人";
                     const artworkTitle = n.artwork?.title ?? "你的作品";
-                    const commentContent = n.comment?.content;
-                    const lastMessage = isLike
+                    const commentContent = n.comment?.content as string | undefined;
+                    const commentSnippet =
+                        commentContent && commentContent.length > 100
+                            ? `${commentContent.slice(0, 100)}…`
+                            : commentContent;
+                    const lastMessage = isArtworkLike
                         ? `${fromName} 点赞了你的作品「${artworkTitle}」`
-                        : isReply
+                        : isCommentLike
+                          ? commentSnippet
+                              ? `${fromName} 赞了你在「${artworkTitle}」下的评论：${commentSnippet}`
+                              : `${fromName} 赞了你在「${artworkTitle}」下的评论`
+                          : isReply
                             ? commentContent
                                 ? `${fromName} 在「${artworkTitle}」下回复你：${commentContent}`
                                 : `${fromName} 在「${artworkTitle}」下回复了你`
-                            : isMention
-                                ? commentContent
-                                    ? `${fromName} 在「${artworkTitle}」的评论中@了你：${commentContent}`
-                                    : `${fromName} 在「${artworkTitle}」的评论中@了你`
-                                : commentContent
-                                    ? `${fromName} 在「${artworkTitle}」下评论：${commentContent}`
-                                    : `${fromName} 评论了你的作品「${artworkTitle}」`;
+                            : commentContent
+                              ? `${fromName} 在「${artworkTitle}」下评论：${commentContent}`
+                              : `${fromName} 评论了你的作品「${artworkTitle}」`;
+                    const artworkId =
+                        typeof n.artwork?.id === "number"
+                            ? n.artwork.id
+                            : typeof n.artworkId === "number"
+                              ? n.artworkId
+                              : undefined;
+                    const fromUid =
+                        typeof n.fromUser?.id === "number"
+                            ? n.fromUser.id
+                            : typeof n.fromUserId === "number"
+                              ? n.fromUserId
+                              : undefined;
+                    const nt =
+                        n.type === "like" || n.type === "comment_like" || n.type === "comment" || n.type === "reply"
+                            ? n.type
+                            : undefined;
                     return {
                         id: String(n.id),
                         sender: fromName,
+                        otherUserId: fromUid,
                         senderAvatar: n.fromUser?.avatarUrl ?? undefined,
                         lastMessage,
                         timestamp: n.createdAt ?? new Date().toISOString(),
                         unreadCount: n.isRead ? 0 : 1,
+                        notificationArtworkId: artworkId,
+                        notificationFromUserId: fromUid,
+                        notificationType: nt,
                     };
                 });
                 setNotifications(list);
-                // 如果有未读通知，标记为已读并通知导航栏刷新红点
-                if ((data || []).some((n: any) => !n.isRead)) {
+                // 仅将「当前 tab 拉到的这批」未读标为已读，避免在「点赞」里误把评论/回复也全局 read-all 清掉
+                const unreadIds: number[] = (data || [])
+                    .filter((n: any) => n && !n.isRead && typeof n.id === "number")
+                    .map((n: any) => n.id as number);
+                if (unreadIds.length > 0) {
                     try {
-                        await fetch("/api/notifications/read-all", {
-                            method: "PATCH",
-                            headers: getAuthHeaders(token),
-                        });
+                        const headers = getAuthHeaders(token);
+                        await Promise.all(
+                            unreadIds.map((id) =>
+                                fetch(`/api/notifications/${id}/read`, {
+                                    method: "PATCH",
+                                    headers,
+                                }),
+                            ),
+                        );
                         window.dispatchEvent(new Event("oc-notifications-updated"));
                         await fetchNotificationBadgeCounts();
                     } catch {
                         // 忽略标记已读失败
                     }
                 }
-                // 点赞&评论只影响中间列表高亮，不改变右侧会话
-                if (list.length > 0) {
-                    setSelectedId(list[0].id);
-                } else {
-                    setSelectedId(undefined);
-                }
+                // 中间列表高亮：仅在无选中或当前选中已不在列表中时默认第一条；避免每次刷新/标记已读后把用户选中打回第一项
+                setSelectedId((prev) => {
+                    const ids = new Set(list.map((item) => item.id));
+                    if (list.length === 0) return undefined;
+                    if (prev && ids.has(prev)) return prev;
+                    return list[0].id;
+                });
             } catch (e) {
                 // eslint-disable-next-line no-console
                 console.error(e);
@@ -598,7 +735,7 @@ export default function InboxPage() {
             void fetchNotificationBadgeCounts();
             const tab = activeTabRef.current;
             if (
-                ["all-likes-comments", "likes", "comments", "replies", "mentions"].includes(tab)
+                ["all-likes-comments", "likes", "comments", "replies"].includes(tab)
             ) {
                 void fetchNotifications(tab);
             }
@@ -640,7 +777,7 @@ export default function InboxPage() {
             return;
         }
         // 点赞&评论分组
-        if (["all-likes-comments", "likes", "comments", "replies", "mentions"].includes(activeTab)) {
+        if (["all-likes-comments", "likes", "comments", "replies"].includes(activeTab)) {
             fetchNotifications(activeTab);
         }
     }, [activeTab, fetchCommissionApplications, fetchConversations, fetchNotifications, selectedConversationId]);
@@ -649,11 +786,17 @@ export default function InboxPage() {
         (location.state as { otherUserId?: number })?.otherUserId ??
         (() => {
             const q = searchParams.get("otherUserId");
-            return q ? parseInt(q, 10) : undefined;
+            if (!q || !/^\d+$/.test(q.trim())) return undefined;
+            return parseInt(q.trim(), 10);
         })();
 
     useEffect(() => {
-        if (!token || !otherUserIdFromRoute || openedFromProfileRef.current) return;
+        if (!token) return;
+        if (!otherUserIdFromRoute) {
+            openedFromProfileRef.current = false;
+            return;
+        }
+        if (openedFromProfileRef.current) return;
         const num = Number(otherUserIdFromRoute);
         if (!Number.isInteger(num) || num < 1) return;
 
@@ -665,7 +808,10 @@ export default function InboxPage() {
                     headers: { "Content-Type": "application/json", ...getAuthHeaders(token) },
                     body: JSON.stringify({ otherUserId: num }),
                 });
-                if (!res.ok) return;
+                if (!res.ok) {
+                    openedFromProfileRef.current = false;
+                    return;
+                }
                 const data = await res.json();
                 const newId = String(data.id);
                 setSelectedId(newId);
@@ -673,6 +819,7 @@ export default function InboxPage() {
                 await fetchConversations();
                 navigate("/inbox", { replace: true });
             } catch (e) {
+                openedFromProfileRef.current = false;
                 // eslint-disable-next-line no-console
                 console.error(e);
             }
@@ -728,11 +875,6 @@ export default function InboxPage() {
         fetchConversationsRef.current = fetchConversations;
     }, [fetchConversations]);
 
-    const selectedConversationIdRef = useRef<string | undefined>(undefined);
-    useEffect(() => {
-        selectedConversationIdRef.current = selectedConversationId;
-    }, [selectedConversationId]);
-
     const userIdRef = useRef<number | undefined>(undefined);
     useEffect(() => {
         userIdRef.current = user?.id;
@@ -745,73 +887,55 @@ export default function InboxPage() {
 
     useEffect(() => {
         if (!token) return;
-        const socket = io({
-            path: "/socket.io",
-            auth: { token },
-            transports: ["websocket", "polling"],
-        });
-        socket.on(
-            "chat:message",
-            (payload: {
-                conversationId: number;
-                message: {
-                    id: number;
-                    content: string;
-                    createdAt: string;
-                    senderId: number;
-                    sender: string;
-                    senderAvatar: string | null;
-                };
-            }) => {
-                const cid = String(payload.conversationId);
-                const openCid = selectedConversationIdRef.current;
-                const markOpenConvReadThenRefresh = async () => {
-                    const showingDmChat = activeTabRef.current !== "commission-messages";
-                    if (openCid === cid && showingDmChat) {
-                        try {
-                            const res = await fetch(`/api/conversations/${cid}/read`, {
-                                method: "POST",
-                                headers: getAuthHeaders(token),
-                            });
-                            if (!res.ok) {
-                                // eslint-disable-next-line no-console
-                                console.warn("标记会话已读失败", res.status);
-                            }
-                        } catch (e) {
+        const onChatMessage = (ev: Event) => {
+            const ce = ev as CustomEvent<OcChatMessageDetail>;
+            const payload = ce.detail;
+            if (!payload || typeof payload.conversationId !== "number" || !payload.message) return;
+            const cid = String(payload.conversationId);
+            const openCid = selectedConversationIdRef.current;
+            const markOpenConvReadThenRefresh = async () => {
+                const showingDmChat = activeTabRef.current !== "commission-messages";
+                if (openCid === cid && showingDmChat) {
+                    try {
+                        const res = await fetch(`/api/conversations/${cid}/read`, {
+                            method: "POST",
+                            headers: getAuthHeaders(token),
+                        });
+                        if (!res.ok) {
                             // eslint-disable-next-line no-console
-                            console.warn("标记会话已读失败", e);
+                            console.warn("标记会话已读失败", res.status);
                         }
+                    } catch (e) {
+                        // eslint-disable-next-line no-console
+                        console.warn("标记会话已读失败", e);
                     }
-                    await fetchConversationsRef.current();
+                }
+                await fetchConversationsRef.current();
+            };
+            void markOpenConvReadThenRefresh();
+            if (openCid !== cid) return;
+            if (activeTabRef.current === "commission-messages") return;
+            const myId = userIdRef.current;
+            if (myId == null) return;
+            const m = payload.message;
+            setMessages((prev) => {
+                const id = String(m.id);
+                if (prev.some((x) => x.id === id)) return prev;
+                const row: ChatMessage = {
+                    id,
+                    sender: m.senderId === myId ? "我" : m.sender,
+                    senderId: m.senderId,
+                    senderAvatar: m.senderAvatar ?? undefined,
+                    content: m.content ?? "",
+                    timestamp: m.createdAt ?? new Date().toISOString(),
+                    isOwn: m.senderId === myId,
                 };
-                void markOpenConvReadThenRefresh();
-                if (openCid !== cid) return;
-                if (activeTabRef.current === "commission-messages") return;
-                const myId = userIdRef.current;
-                if (myId == null) return;
-                const m = payload.message;
-                setMessages((prev) => {
-                    const id = String(m.id);
-                    if (prev.some((x) => x.id === id)) return prev;
-                    const row: ChatMessage = {
-                        id,
-                        sender: m.senderId === myId ? "我" : m.sender,
-                        senderId: m.senderId,
-                        senderAvatar: m.senderAvatar ?? undefined,
-                        content: m.content ?? "",
-                        timestamp: m.createdAt ?? new Date().toISOString(),
-                        isOwn: m.senderId === myId,
-                    };
-                    return [...prev, row];
-                });
-            },
-        );
-        socket.on("connect_error", (err) => {
-            // eslint-disable-next-line no-console
-            console.warn("私信实时连接失败:", err.message);
-        });
+                return [...prev, row];
+            });
+        };
+        window.addEventListener(OC_CHAT_MESSAGE_EVENT, onChatMessage as EventListener);
         return () => {
-            socket.disconnect();
+            window.removeEventListener(OC_CHAT_MESSAGE_EVENT, onChatMessage as EventListener);
         };
     }, [token]);
 
@@ -1068,7 +1192,8 @@ export default function InboxPage() {
         [token, fetchCommissionApplications, fetchConversations],
     );
 
-    const isLikesTab = ["all-likes-comments", "likes", "comments", "replies", "mentions"].includes(activeTab);
+    const isLikesTab = ["all-likes-comments", "likes", "comments", "replies"].includes(activeTab);
+
     const commissionMessageList = commissionApplications.map((item) => {
         const createdMs = new Date(item.createdAt).getTime();
         const updatedMs = item.commission.updatedAt
@@ -1177,7 +1302,6 @@ export default function InboxPage() {
         likes: "点赞通知",
         comments: "评论通知",
         replies: "回复我的",
-        mentions: "@我的消息",
     };
     /** 「全部」列表为全部会话，红点 = 所有私聊会话未读之和（与底栏会话未读一致） */
     const allMessagesUnread = conversations.reduce(
@@ -1194,10 +1318,10 @@ export default function InboxPage() {
         "pinned-messages": pinnedUnreadMessages,
         "commission-messages": commissionUnreadMessages,
     };
-    const { ["all-likes-comments"]: _skipAllLikesComments, ...notificationBadgeCountMapWithoutAll } = notificationBadgeCountMap;
+    /** 含 all-likes-comments，「点赞&评论 → 全部」才显示未读红点 */
     const sidebarBadgeCountMap: Record<string, number> = {
         ...messageBadgeCountMap,
-        ...notificationBadgeCountMapWithoutAll,
+        ...notificationBadgeCountMap,
     };
     const listTitle = sidebarTabLabelMap[activeTab] ?? "消息";
     // 右侧聊天用的会话（始终从 conversations 取）
@@ -1214,25 +1338,33 @@ export default function InboxPage() {
 
     if (!user) {
         return (
-            <div className="inbox-page">
-                <div className="inbox-page-layout inbox-page-login-prompt">
-                    <div className="message-detail-empty">
-                        <p>请先登录后查看消息</p>
-                        <Link to="/login" className="inbox-login-link">去登录</Link>
-                    </div>
+            <div className="oc-auth-gate-page">
+                <div className="oc-auth-gate-page__inner">
+                    <AuthPromptPanel
+                        title="登录后查看消息"
+                        description="登录后可查看私信、约稿申请与系统通知，与其他用户实时沟通。"
+                    />
                 </div>
             </div>
         );
     }
 
     return (
-        <div className="inbox-page">
+        <div className="inbox-page" style={inboxPageStyle}>
             <div className="inbox-page-layout">
                 <MessageSidebar
                     activeTab={activeTab}
                     onTabChange={setActiveTab}
                     onAutoReplyClick={openAutoReplyModal}
                     badgeCountMap={sidebarBadgeCountMap}
+                />
+                <div
+                    className="inbox-sidebar-resizer"
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="拖拽调整左侧收件箱栏宽度"
+                    tabIndex={0}
+                    onPointerDown={onInboxSidebarResizeStart}
                 />
                 <MessageList
                     messages={currentList}
@@ -1324,31 +1456,31 @@ export default function InboxPage() {
                         acceptingCommissionId={acceptingCommissionId}
                         rejectingReviewCommissionId={rejectingReviewCommissionId}
                     />
-                ) : selectedConvForChat ? (
+                ) : selectedConvForChat && selectedConversationId ? (
                     <MessageDetail
-                        messageId={selectedConversationId!}
+                        messageId={selectedConversationId}
                         sender={selectedConvForChat.sender}
                         otherUserId={selectedConvForChat.otherUserId}
                         senderAvatar={selectedConvForChat.senderAvatar}
                         timestamp={lastTimestamp}
                         chatMessages={messages}
-                        draft={drafts[selectedConversationId!] ?? ""}
+                        draft={drafts[selectedConversationId] ?? ""}
                         onDraftChange={(next) => {
                             setDrafts((prev) => ({
                                 ...prev,
-                                [selectedConversationId!]: next,
+                                [selectedConversationId]: next,
                             }));
                         }}
                         onSendMessage={handleSendMessage}
                         onSent={() => {
                             setDrafts((prev) => {
                                 const next = { ...prev };
-                                delete next[selectedConversationId!];
+                                delete next[selectedConversationId];
                                 return next;
                             });
                         }}
                     />
-                ) : (
+                ) : isLikesTab ? null : (
                     <div className="message-detail-empty">
                         {loading ? (
                             <p>加载中…</p>
@@ -1358,24 +1490,6 @@ export default function InboxPage() {
                                     <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
                                 </svg>
                                 <p>暂无会话，选择左侧开始聊天</p>
-                                {!isLikesTab && conversations.length === 0 && (
-                                    <div className="message-detail-empty-actions">
-                                        <button
-                                            type="button"
-                                            className="message-detail-empty-btn"
-                                            onClick={() => navigate("/me/follows?tab=following")}
-                                        >
-                                            去关注一些用户
-                                        </button>
-                                        <button
-                                            type="button"
-                                            className="message-detail-empty-btn secondary"
-                                            onClick={() => navigate("/commissions")}
-                                        >
-                                            去稿件广场
-                                        </button>
-                                    </div>
-                                )}
                             </>
                         )}
                     </div>

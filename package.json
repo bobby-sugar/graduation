@@ -1,9 +1,10 @@
 {
-  "name": "oc-web",
+  "name": "yumecore",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "sync:oc-assets": "node backend/scripts/sync-oc-assets-to-uploads.js",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",

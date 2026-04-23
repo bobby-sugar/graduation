@@ -214,7 +214,8 @@ export default function MessageList({
                                             {message.sender.charAt(0)}
                                         </div>
                                     )}
-                                    {variant === "default" && message.unreadCount > 0 && (
+                                    {(variant === "default" || variant === "notifications") &&
+                                        message.unreadCount > 0 && (
                                         <span className="message-item-badge">
                                             {message.unreadCount > 99 ? "99+" : message.unreadCount}
                                         </span>

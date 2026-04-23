@@ -1,0 +1,14 @@
+flowchart TB
+  A[Find an artist's post] --> B[Apply in a private message]
+  B --> C{Artist accepted you?}
+  C -->|No| D[Wait or try elsewhere]
+  C -->|Yes| E[Pay as agreed]
+  E --> F{Continue?}
+  F -->|Canceled payment| E
+  F -->|Paid| G[Wait for delivery]
+  G --> H[Review what they send]
+  H --> I[They ask for your sign-off]
+  I --> J{Accept result?}
+  J -->|No| K[Request revisions]
+  K --> G
+  J -->|Yes| L[Approve and finish]

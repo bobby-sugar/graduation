@@ -1,0 +1,13 @@
+flowchart TB
+  A[Post a hiring request] --> B[Wait for applications in messages]
+  B --> C[Review applications]
+  C --> D[Accept one person]
+  D --> E[Wait for them to pay]
+  E --> F{Paid?}
+  F -->|Not yet; they withdrew payment| E
+  F -->|Yes| G[Do your part of the work]
+  G --> H[Send progress files if needed]
+  H --> I[Submit work for their approval]
+  I --> J{They satisfied?}
+  J -->|Ask for changes| G
+  J -->|Approve| K[Close the job]

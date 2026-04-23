@@ -79,7 +79,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const parts = jwt.split(".");
       if (parts.length < 2) return null;
-      const payload = JSON.parse(atob(parts[1]));
+      const seg = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+      const pad = seg.length % 4 === 0 ? "" : "=".repeat(4 - (seg.length % 4));
+      const payload = JSON.parse(atob(seg + pad));
       return typeof payload.exp === "number" ? payload.exp : null;
     } catch {
       return null;
@@ -124,7 +126,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const u = localStorage.getItem(STORAGE_USER);
       const r = localStorage.getItem(STORAGE_REFRESH_TOKEN);
       const sid = localStorage.getItem(STORAGE_SESSION_ID);
-      if (!u || !r || !sid) {
+      // 兼容旧登录态（历史版本可能没有 sessionId）：只要 user + refreshToken 还在，就优先尝试 refresh 拉新会话。
+      if (!u || !r) {
         clearAuthState();
         setIsReady(true);
         return;
@@ -133,8 +136,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const parsedUser = JSON.parse(u) as AuthUser;
         setUser(parsedUser);
         setRefreshToken(r);
-        setSessionId(sid);
-        if (t && !isTokenExpiringSoon(t, 60)) {
+        if (sid) setSessionId(sid);
+        if (sid && t && !isTokenExpiringSoon(t, 60)) {
           setToken(t);
         } else {
           await refreshSession();

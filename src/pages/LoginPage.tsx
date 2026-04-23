@@ -12,7 +12,9 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const from = searchParams.get("from") ?? "/";
+  const fromParam = searchParams.get("from") ?? "/";
+  const from =
+    fromParam.startsWith("/") && !fromParam.startsWith("//") ? fromParam : "/";
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -33,45 +35,86 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="login-page">
-      <div className="login-card">
-        <h1 className="login-title">登录</h1>
-        <form className="login-form" onSubmit={handleSubmit}>
-          <label className="login-label">邮箱或用户名</label>
-          <input
-            type="text"
-            className="login-input"
-            value={loginId}
-            onChange={(e) => setLoginId(e.target.value)}
-            placeholder="请输入邮箱或用户名"
-            autoComplete="username"
-            disabled={loading}
-          />
-          <label className="login-label">密码</label>
-          <input
-            type="password"
-            className="login-input"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="请输入密码"
-            autoComplete="current-password"
-            disabled={loading}
-          />
-          {error && <p className="login-error">{error}</p>}
-          <div className="login-actions">
-            <button
-              type="button"
-              className="login-secondary"
-              disabled={loading}
-              onClick={() => navigate(`/register?from=${encodeURIComponent(from)}`)}
-            >
-              注册
-            </button>
-            <button type="submit" className="login-submit" disabled={loading}>
-              {loading ? "登录中…" : "登录"}
-            </button>
+    <div className="auth-page">
+      <div className="auth-page-bg" aria-hidden />
+      <div className="auth-page-inner">
+        <div className="auth-brand">
+          <div className="auth-brand-mark" aria-hidden>
+            <span className="auth-brand-icon" />
           </div>
-        </form>
+          <span className="auth-brand-text">YumeCore</span>
+          <p className="auth-brand-tagline">创作 · 展示 · 约稿</p>
+        </div>
+
+        <div className="auth-card">
+          <div className="auth-card-accent" aria-hidden />
+          <header className="auth-card-header">
+            <h1 className="auth-title">欢迎回来</h1>
+            <p className="auth-subtitle">使用邮箱或用户名登录你的账户</p>
+          </header>
+
+          <form className="auth-form" onSubmit={handleSubmit}>
+            <div className="auth-field">
+              <label className="auth-label" htmlFor="login-id">
+                邮箱或用户名
+              </label>
+              <input
+                id="login-id"
+                type="text"
+                className="auth-input"
+                value={loginId}
+                onChange={(e) => setLoginId(e.target.value)}
+                placeholder="name@email.com 或 昵称"
+                autoComplete="username"
+                disabled={loading}
+              />
+            </div>
+            <div className="auth-field">
+              <label className="auth-label" htmlFor="login-password">
+                密码
+              </label>
+              <input
+                id="login-password"
+                type="password"
+                className="auth-input"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="输入密码"
+                autoComplete="current-password"
+                disabled={loading}
+              />
+            </div>
+
+            {error ? (
+              <div className="auth-error" role="alert">
+                {error}
+              </div>
+            ) : null}
+
+            <button type="submit" className="auth-btn-primary" disabled={loading}>
+              {loading ? (
+                <span className="auth-btn-loading">
+                  <span className="auth-spinner" aria-hidden />
+                  登录中…
+                </span>
+              ) : (
+                "登录"
+              )}
+            </button>
+
+            <p className="auth-switch">
+              还没有账户？
+              <button
+                type="button"
+                className="auth-switch-link"
+                disabled={loading}
+                onClick={() => navigate(`/register?from=${encodeURIComponent(from)}`)}
+              >
+                立即注册
+              </button>
+            </p>
+          </form>
+        </div>
       </div>
     </div>
   );

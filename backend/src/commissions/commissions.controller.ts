@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -12,6 +11,10 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import { CommissionsService } from "./commissions.service";
+import { CreateCommissionDto } from "./dto/create-commission.dto";
+import { UpdateCommissionDto } from "./dto/update-commission.dto";
+import { RemovePublisherDeliveryFileDto } from "./dto/remove-publisher-delivery-file.dto";
+import { SubmitCommissionDeliveryDto } from "./dto/submit-commission-delivery.dto";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { OptionalJwtAuthGuard } from "../auth/optional-jwt.guard";
 import { GetUser, GetUserOptional } from "../auth/get-user.decorator";
@@ -21,30 +24,26 @@ export class CommissionsController {
   constructor(private readonly commissionsService: CommissionsService) {}
 
   @Get()
+  @UseGuards(OptionalJwtAuthGuard)
   findAll(
     @Query("artistId") artistId?: string,
     @Query("clientId") clientId?: string,
     @Query("direction") direction?: string,
+    @GetUserOptional() user?: { id: number },
   ) {
     const artist = artistId ? Number(artistId) : undefined;
     const client = clientId ? Number(clientId) : undefined;
-    return this.commissionsService.findAll({ artistId: artist, clientId: client, direction });
+    return this.commissionsService.findAll({
+      artistId: artist,
+      clientId: client,
+      direction,
+      viewerId: user?.id,
+    });
   }
 
   @Post()
   @UseGuards(JwtAuthGuard)
-  create(
-    @GetUser() user: { id: number },
-    @Body()
-    body: {
-      title: string;
-      description?: string | null;
-      category: string;
-      price: number;
-      direction?: string;
-      previewImageUrl?: string | null;
-    },
-  ) {
+  create(@GetUser() user: { id: number }, @Body() body: CreateCommissionDto) {
     return this.commissionsService.create(user.id, body);
   }
 
@@ -71,17 +70,13 @@ export class CommissionsController {
   removePublisherDeliveryFile(
     @GetUser() user: { id: number },
     @Param("id", ParseIntPipe) id: number,
-    @Body() body: { messageId?: number; url?: string },
+    @Body() body: RemovePublisherDeliveryFileDto,
   ) {
-    const mid = Number(body?.messageId);
-    if (!Number.isFinite(mid) || mid < 1) {
-      throw new BadRequestException("无效的消息 id");
-    }
     return this.commissionsService.removePublisherDeliveryFile(
       user.id,
       id,
-      mid,
-      String(body?.url ?? ""),
+      body.messageId,
+      String(body.url ?? ""),
     );
   }
 
@@ -99,16 +94,7 @@ export class CommissionsController {
   updateByOwner(
     @GetUser() user: { id: number },
     @Param("id", ParseIntPipe) id: number,
-    @Body()
-    body: {
-      title?: string;
-      description?: string | null;
-      category?: string;
-      price?: number;
-      status?: string;
-      direction?: string;
-      previewImageUrl?: string | null;
-    },
+    @Body() body: UpdateCommissionDto,
   ) {
     return this.commissionsService.updateByOwner(user.id, id, body);
   }
@@ -139,18 +125,13 @@ export class CommissionsController {
   submitDeliveryByPublisher(
     @GetUser() user: { id: number },
     @Param("id", ParseIntPipe) id: number,
-    @Body()
-    body: {
-      files?: Array<{ name: string; url: string; relativePath?: string | null }>;
-      /** 为 false 时仅推送交付消息，保持进行中/修改中，可多次提交 */
-      finalize?: boolean;
-    },
+    @Body() body: SubmitCommissionDeliveryDto,
   ) {
     return this.commissionsService.submitDeliveryByPublisher(
       user.id,
       id,
-      Array.isArray(body?.files) ? body.files : [],
-      { finalize: body?.finalize },
+      Array.isArray(body.files) ? body.files : [],
+      { finalize: body.finalize },
     );
   }
 

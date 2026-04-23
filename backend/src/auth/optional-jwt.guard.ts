@@ -45,6 +45,15 @@ export class OptionalJwtAuthGuard implements CanActivate {
         select: { id: true, username: true },
       });
       if (user) {
+        const sid = typeof payload.sid === "string" ? payload.sid.trim() : "";
+        if (sid) {
+          const session = await this.prisma.session.findFirst({
+            where: { id: sid, userId: subNum, revokedAt: null },
+          });
+          if (!session || session.expiresAt.getTime() <= Date.now()) {
+            return true;
+          }
+        }
         request.user = { ...user, sessionId: payload.sid };
       }
     } catch {

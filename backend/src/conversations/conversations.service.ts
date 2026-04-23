@@ -1,10 +1,12 @@
 import {
+  BadRequestException,
   ForbiddenException,
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../prisma/prisma.service";
+import { ArtworksService } from "../artworks/artworks.service";
 import { CommissionsService } from "../commissions/commissions.service";
 import { CreateConversationDto } from "./dto/create-conversation.dto";
 import { SendMessageDto } from "./dto/send-message.dto";
@@ -15,6 +17,7 @@ export class ConversationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly commissionsService: CommissionsService,
+    private readonly artworks: ArtworksService,
     private readonly chatPush: ChatPushService,
   ) {}
 
@@ -63,6 +66,63 @@ export class ConversationsService {
     }
   }
 
+  /**
+   * 解析并校验作品分享卡片；仅当 content 以 __ARTWORK_SHARE__ 开头且整体合法时返回 artworkId。
+   * 不以该前缀开头时返回 null；前缀存在但 JSON/字段不合法时返回 null（由 sendMessage 再抛 400）。
+   */
+  private tryParseArtworkSharePayload(content: string): { artworkId: number } | null {
+    if (!content.startsWith("__ARTWORK_SHARE__")) return null;
+    const TITLE_MAX = 500;
+    const IMAGE_URL_MAX = 2048;
+    const AUTHOR_MAX = 100;
+    const CATEGORY_MAX = 64;
+    try {
+      const parsed = JSON.parse(content.slice("__ARTWORK_SHARE__".length));
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+      const allowed = new Set([
+        "type",
+        "artworkId",
+        "title",
+        "imageUrl",
+        "category",
+        "authorUsername",
+      ]);
+      for (const k of Object.keys(parsed)) {
+        if (!allowed.has(k)) return null;
+      }
+      if (parsed?.type !== "artwork_share") return null;
+      const rawId = parsed?.artworkId;
+      const artworkId =
+        typeof rawId === "number"
+          ? rawId
+          : typeof rawId === "string" && /^\d+$/.test(rawId)
+            ? Number(rawId)
+            : NaN;
+      if (!Number.isFinite(artworkId) || artworkId < 1) return null;
+      if (typeof parsed?.title !== "string") return null;
+      const title = parsed.title.trim();
+      if (title.length === 0 || title.length > TITLE_MAX) return null;
+      if (parsed.imageUrl != null) {
+        if (typeof parsed.imageUrl !== "string" || parsed.imageUrl.length > IMAGE_URL_MAX) {
+          return null;
+        }
+      }
+      if (parsed.authorUsername != null) {
+        if (typeof parsed.authorUsername !== "string" || parsed.authorUsername.length > AUTHOR_MAX) {
+          return null;
+        }
+      }
+      if (parsed.category != null) {
+        if (typeof parsed.category !== "string" || parsed.category.length > CATEGORY_MAX) {
+          return null;
+        }
+      }
+      return { artworkId };
+    } catch {
+      return null;
+    }
+  }
+
   private parseCommissionApplyResultPayload(content: string):
     | { commissionId: number; title?: string; accepted: boolean }
     | null {
@@ -104,6 +164,27 @@ export class ConversationsService {
     return null;
   }
 
+  /**
+   * 待确认且尚未完成支付约定时，历史上任意「通过/拒绝」都不应阻塞继续处理新的申请
+   * （否则拒绝 A 后将永远无法通过 B；取消支付后需能再次操作同一承接方）。
+   */
+  private shouldIgnorePriorApplyResults(c: {
+    status: string;
+    direction: string;
+    clientId: number | null;
+    artistId: number | null;
+    paymentStatus: string;
+  }): boolean {
+    const payerId =
+      c.direction === "offer" ? c.clientId : c.artistId;
+    const unpaid =
+      c.paymentStatus === "unpaid" || c.paymentStatus === "partial";
+    return (
+      (c.status === "pending" || c.status === "new") &&
+      (payerId == null || unpaid)
+    );
+  }
+
   async getCommissionApplications(myId: number) {
     const commissionSelect = {
       id: true,
@@ -126,6 +207,7 @@ export class ConversationsService {
         OR: [{ clientId: myId }, { artistId: myId }],
         status: {
           in: [
+            "new",
             "pending",
             "payment-pending",
             "wip",
@@ -161,7 +243,7 @@ export class ConversationsService {
         ? await this.prisma.commission.findMany({
             where: {
               id: { in: extraIds },
-              status: "pending",
+              status: { in: ["pending", "new"] },
               OR: [
                 { direction: "commission", artistId: null },
                 { direction: "offer", clientId: null },
@@ -333,7 +415,9 @@ export class ConversationsService {
         (commission.status === "wip" || commission.status === "revising");
       const canAccept = isPayer && commission.status === "review-pending";
       const isIncomingPending =
-        isPublisher && commission.status === "pending" && !payerId;
+        isPublisher &&
+        (commission.status === "pending" || commission.status === "new") &&
+        !payerId;
 
       if (isIncomingPending) {
         const bySender = new Map<number, (typeof parsedApply)[number]>();
@@ -385,7 +469,7 @@ export class ConversationsService {
 
       const isApplicantWaitingConfirm =
         !isPublisher &&
-        commission.status === "pending" &&
+        (commission.status === "pending" || commission.status === "new") &&
         !payerId;
       if (isApplicantWaitingConfirm) {
         const myLatestApply = appliesInCycle.find((a) => a.senderId === myId);
@@ -563,6 +647,9 @@ export class ConversationsService {
     if (!commission) {
       throw new NotFoundException("稿件不存在");
     }
+    if (commission.status !== "new" && commission.status !== "pending") {
+      throw new ForbiddenException("当前稿件状态不可确认申请，请刷新后重试");
+    }
 
     const publisherId =
       commission.direction === "offer" ? commission.artistId : commission.clientId;
@@ -608,17 +695,7 @@ export class ConversationsService {
       }
     }
 
-    const payerIdForOpen =
-      commission.direction === "offer"
-        ? commission.clientId
-        : commission.artistId;
-    const unpaidForStale =
-      commission.paymentStatus === "unpaid" ||
-      commission.paymentStatus === "partial";
-    /** 待确认且无承接方，或已绑定但仍未付（含取消支付退回）：略过历史上「已接受」结果 */
-    const skipStalePositiveApplyResult =
-      commission.status === "pending" &&
-      (payerIdForOpen == null || unpaidForStale);
+    const skipApplyHistory = this.shouldIgnorePriorApplyResults(commission);
 
     const alreadyHandledMessages = await this.prisma.message.findMany({
       where: {
@@ -640,10 +717,7 @@ export class ConversationsService {
           resultPayload?.type === "commission_apply_result" &&
           resultPayload?.commissionId === commission.id
         ) {
-          if (
-            skipStalePositiveApplyResult &&
-            resultPayload.accepted !== false
-          ) {
+          if (skipApplyHistory) {
             continue;
           }
           hasHandled = true;
@@ -780,23 +854,16 @@ export class ConversationsService {
     if (!commission) {
       throw new NotFoundException("稿件不存在");
     }
+    if (commission.status !== "new" && commission.status !== "pending") {
+      throw new ForbiddenException("当前稿件状态不可拒绝该申请，请刷新后重试");
+    }
     const publisherId =
       commission.direction === "offer" ? commission.artistId : commission.clientId;
     if (publisherId !== myId) {
       throw new ForbiddenException("只有稿件发起者可以拒绝申请");
     }
 
-    const payerForRejectStale =
-      commission.direction === "offer"
-        ? commission.clientId
-        : commission.artistId;
-    const unpaidRejectStale =
-      commission.paymentStatus === "unpaid" ||
-      commission.paymentStatus === "partial";
-    const skipStaleAcceptWhenRejecting =
-      commission.status === "pending" &&
-      payerForRejectStale != null &&
-      unpaidRejectStale;
+    const skipApplyHistory = this.shouldIgnorePriorApplyResults(commission);
 
     const conversation = applicationMessage.conversation;
     if (
@@ -831,10 +898,7 @@ export class ConversationsService {
           resultPayload?.type === "commission_apply_result" &&
           resultPayload?.commissionId === commission.id
         ) {
-          if (
-            skipStaleAcceptWhenRejecting &&
-            resultPayload.accepted !== false
-          ) {
+          if (skipApplyHistory) {
             continue;
           }
           hasHandled = true;
@@ -964,10 +1028,13 @@ export class ConversationsService {
     });
 
     const ids = list.map((c) => c.id);
-    const reads = await this.prisma.conversationRead.findMany({
-      where: { userId: myId, conversationId: { in: ids } },
-      select: { conversationId: true, lastReadAt: true },
-    });
+    const reads =
+      ids.length === 0
+        ? []
+        : await this.prisma.conversationRead.findMany({
+            where: { userId: myId, conversationId: { in: ids } },
+            select: { conversationId: true, lastReadAt: true },
+          });
     const readAtMap = new Map<number, Date>(
       reads.map((r) => [r.conversationId, r.lastReadAt]),
     );
@@ -1086,12 +1153,40 @@ export class ConversationsService {
     if (!content) {
       throw new ForbiddenException("消息内容不能为空");
     }
-    const maxLen = content.startsWith("__COMMISSION_CARD__") ? 12000 : 2000;
+    const maxLen = content.startsWith("__COMMISSION_CARD__")
+      ? 12000
+      : content.startsWith("__ARTWORK_SHARE__")
+        ? 8000
+        : 2000;
     if (content.length > maxLen) {
       throw new ForbiddenException(
         maxLen > 2000
-          ? "申请卡片内容过长，请缩短标题或封面链接后重试"
+          ? "卡片消息内容过长，请缩短后重试"
           : "消息最多 2000 字",
+      );
+    }
+
+    if (content.startsWith("__ARTWORK_SHARE__")) {
+      const artworkSharePayload = this.tryParseArtworkSharePayload(content);
+      if (!artworkSharePayload) {
+        throw new BadRequestException("作品分享格式无效");
+      }
+      const otherUserId =
+        conv.participant1Id === myId ? conv.participant2Id : conv.participant1Id;
+      const okFollow = await this.prisma.follow.findUnique({
+        where: {
+          followerId_followingId: {
+            followerId: myId,
+            followingId: otherUserId,
+          },
+        },
+      });
+      if (!okFollow) {
+        throw new ForbiddenException("只能向自己关注的用户分享作品");
+      }
+      await this.artworks.assertMayViewArtworkForPublicApi(
+        artworkSharePayload.artworkId,
+        myId,
       );
     }
 

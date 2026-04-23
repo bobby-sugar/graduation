@@ -1,0 +1,13 @@
+flowchart TB
+  A[Post that you take commissions] --> B[Wait for clients to apply in messages]
+  B --> C[Review applications]
+  C --> D[Accept one client]
+  D --> E[Wait for payment]
+  E --> F{Paid?}
+  F -->|Not yet; they withdrew| E
+  F -->|Yes| G[Produce the work]
+  G --> H[Send progress files if needed]
+  H --> I[Submit for client approval]
+  I --> J{Client satisfied?}
+  J -->|Changes requested| G
+  J -->|Approved| K[Close the job]

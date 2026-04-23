@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, UnauthorizedException } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { JwtService } from "@nestjs/jwt";
 import * as bcrypt from "bcrypt";
 import { PrismaService } from "../prisma/prisma.service";
@@ -15,7 +16,12 @@ export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
+    private readonly config: ConfigService,
   ) {}
+
+  private jwtSecret() {
+    return this.config.get<string>("JWT_SECRET") ?? "oc-web-dev-secret";
+  }
 
   private signAccessToken(user: { id: number; username: string }, sessionId: string) {
     const payload = { sub: user.id, username: user.username, type: "access" as const, sid: sessionId };
@@ -152,7 +158,7 @@ export class AuthService {
         username: string;
         type?: string;
         sid?: string;
-      }>(token);
+      }>(token, { secret: this.jwtSecret() });
     } catch {
       throw new UnauthorizedException("refresh token 已过期或无效");
     }
@@ -224,7 +230,28 @@ export class AuthService {
 
   async logout(userId: number, dto: LogoutDto = {}, currentSessionId?: string) {
     const byBodySessionId = dto.sessionId?.trim();
-    const targetSessionId = byBodySessionId || currentSessionId || null;
+    const byRefreshSessionId = (() => {
+      const refreshToken = dto.refreshToken?.trim();
+      if (!refreshToken) return null;
+      try {
+        const payload = this.jwtService.verify<{
+          sub: number | string;
+          sid?: string;
+          type?: string;
+        }>(refreshToken, { secret: this.jwtSecret() });
+        if (
+          payload.type === "refresh" &&
+          payload.sid &&
+          Number(payload.sub) === userId
+        ) {
+          return payload.sid;
+        }
+      } catch {
+        // ignore invalid refresh token on logout
+      }
+      return null;
+    })();
+    const targetSessionId = byBodySessionId || currentSessionId || byRefreshSessionId || null;
     if (targetSessionId) {
       await this.prisma.session.updateMany({
         where: {
@@ -239,36 +266,17 @@ export class AuthService {
       });
       return { ok: true };
     }
-
-    const refreshToken = dto.refreshToken?.trim();
-    if (refreshToken) {
-      try {
-        const payload = this.jwtService.verify<{
-          sub: number | string;
-          sid?: string;
-          type?: string;
-        }>(refreshToken);
-        if (
-          payload.type === "refresh" &&
-          payload.sid &&
-          Number(payload.sub) === userId
-        ) {
-          await this.prisma.session.updateMany({
-            where: {
-              id: payload.sid,
-              userId,
-              revokedAt: null,
-            },
-            data: {
-              revokedAt: new Date(),
-              revokedReason: "logout",
-            },
-          });
-        }
-      } catch {
-        // ignore invalid refresh token on logout
-      }
-    }
+    // fallback: access token 未携带 sid 时，至少吊销该用户全部存活会话，避免“登出成功但会话仍有效”。
+    await this.prisma.session.updateMany({
+      where: {
+        userId,
+        revokedAt: null,
+      },
+      data: {
+        revokedAt: new Date(),
+        revokedReason: "logout_fallback",
+      },
+    });
     return { ok: true };
   }
 

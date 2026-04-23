@@ -1,4 +1,4 @@
-import { createParamDecorator, ExecutionContext } from "@nestjs/common";
+import { createParamDecorator, ExecutionContext, UnauthorizedException } from "@nestjs/common";
 import { RequestWithUser } from "./jwt-auth.guard";
 
 export const GetUser = createParamDecorator(
@@ -9,7 +9,7 @@ export const GetUser = createParamDecorator(
     const request = ctx.switchToHttp().getRequest<RequestWithUser>();
     const user = request.user;
     if (!user) {
-      throw new Error("JwtAuthGuard must be used to get user");
+      throw new UnauthorizedException("请先登录");
     }
     return user;
   },

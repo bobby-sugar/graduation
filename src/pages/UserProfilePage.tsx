@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useLocation, useNavigate } from "react-router-dom";
 import Card from "../components/Card";
 import type { Artwork, CategoryOption } from "../types";
 import { useAuth } from "../contexts/AuthContext";
+import { useAuthPrompt } from "../contexts/AuthPromptContext";
+import { API_BASE_URL, resolveApiUrl } from "../config/api";
+import { buildArtworkCloseState } from "../artwork/artworkDetailNavigation";
 
-const API_BASE_URL = "http://localhost:3000";
-const DEFAULT_BANNER = "https://images.unsplash.com/photo-1557683316-973673baf926?w=1920&h=640&fit=crop";
+const DEFAULT_BANNER = "/me-default-background.png";
 
 interface ProfileUser {
     id: number;
@@ -40,7 +42,9 @@ interface CardPosition {
 export default function UserProfilePage() {
     const { id } = useParams<{ id: string }>();
     const navigate = useNavigate();
+    const location = useLocation();
     const { user: currentUser, token } = useAuth();
+    const { openAuthPrompt } = useAuthPrompt();
     const [profileUser, setProfileUser] = useState<ProfileUser | null>(null);
     const [artworks, setArtworks] = useState<Artwork[]>([]);
     const [likedArtworks, setLikedArtworks] = useState<Artwork[]>([]);
@@ -49,6 +53,7 @@ export default function UserProfilePage() {
     const [isFollowing, setIsFollowing] = useState(false);
     const [loading, setLoading] = useState(true);
     const [columnCount, setColumnCount] = useState(4);
+    const [masonryInnerWidth, setMasonryInnerWidth] = useState(0);
     const [cardPositions, setCardPositions] = useState<Map<number, CardPosition>>(new Map());
     const [containerHeight, setContainerHeight] = useState(0);
     const containerRef = useRef<HTMLDivElement>(null);
@@ -74,7 +79,14 @@ export default function UserProfilePage() {
     }, [token, profileUserId, isOwnProfile]);
 
     const handleFollowClick = useCallback(async () => {
-        if (!Number.isInteger(profileUserId) || !token) return;
+        if (!Number.isInteger(profileUserId)) return;
+        if (!token) {
+            openAuthPrompt({
+                title: "登录后关注用户",
+                description: "登录后可关注喜欢的作者，并在首页「关注」流中查看更新。",
+            });
+            return;
+        }
         try {
             if (isFollowing) {
                 await fetch(`/api/users/${profileUserId}/follow`, {
@@ -93,7 +105,7 @@ export default function UserProfilePage() {
             // eslint-disable-next-line no-console
             console.error(e);
         }
-    }, [profileUserId, token, isFollowing]);
+    }, [profileUserId, token, isFollowing, openAuthPrompt]);
 
     useEffect(() => {
         if (!id || !Number.isInteger(profileUserId)) {
@@ -131,9 +143,9 @@ export default function UserProfilePage() {
                     const rawUrl = item.imageUrl;
                     let imageUrl = "";
                     if (typeof rawUrl === "string" && rawUrl.length > 0) {
-                        imageUrl = rawUrl.startsWith("http") ? rawUrl : `${API_BASE_URL}${rawUrl}`;
+                        imageUrl = resolveApiUrl(rawUrl);
                     }
-                    if (!imageUrl) imageUrl = `${API_BASE_URL}/uploads/oc_${item.id}.jpg`;
+                    if (!imageUrl) imageUrl = resolveApiUrl(`/uploads/oc_${item.id}.jpg`);
                     return {
                         id: item.id,
                         title: item.title,
@@ -145,6 +157,8 @@ export default function UserProfilePage() {
                         commentCount: item.commentCount ?? 0,
                         createdAt: item.createdAt ?? new Date().toISOString(),
                         category: (item.category as CategoryOption) ?? undefined,
+                        description: item.description ?? null,
+                        tags: item.tags ?? null,
                         isLiked: item.isLiked,
                         isCommented: item.isCommented,
                         hasViewed: item.hasViewed,
@@ -173,9 +187,9 @@ export default function UserProfilePage() {
                     const rawUrl = item.imageUrl;
                     let imageUrl = "";
                     if (typeof rawUrl === "string" && rawUrl.length > 0) {
-                        imageUrl = rawUrl.startsWith("http") ? rawUrl : `${API_BASE_URL}${rawUrl}`;
+                        imageUrl = resolveApiUrl(rawUrl);
                     }
-                    if (!imageUrl) imageUrl = `${API_BASE_URL}/uploads/oc_${item.id}.jpg`;
+                    if (!imageUrl) imageUrl = resolveApiUrl(`/uploads/oc_${item.id}.jpg`);
                     return {
                         id: item.id,
                         title: item.title,
@@ -187,6 +201,8 @@ export default function UserProfilePage() {
                         commentCount: item.commentCount ?? 0,
                         createdAt: item.createdAt ?? new Date().toISOString(),
                         category: (item.category as CategoryOption) ?? undefined,
+                        description: item.description ?? null,
+                        tags: item.tags ?? null,
                         isLiked: item.isLiked,
                         isCommented: item.isCommented,
                         hasViewed: item.hasViewed,
@@ -240,6 +256,7 @@ export default function UserProfilePage() {
     }, [profileUserId]);
 
     useEffect(() => {
+        if (!["portfolio", "likes"].includes(tab)) return;
         const updateColumnCount = () => {
             if (!containerRef.current) return;
             const container = containerRef.current;
@@ -247,6 +264,7 @@ export default function UserProfilePage() {
             const paddingLeft = parseFloat(computedStyle.paddingLeft) || 0;
             const paddingRight = parseFloat(computedStyle.paddingRight) || 0;
             const containerWidth = container.offsetWidth - paddingLeft - paddingRight;
+            setMasonryInnerWidth(Math.max(0, containerWidth));
             const gap = 18;
             const targetColumns = 5;
             const minColumnWidth = 140;
@@ -260,11 +278,14 @@ export default function UserProfilePage() {
         };
         const timer = setTimeout(updateColumnCount, 80);
         window.addEventListener("resize", updateColumnCount);
+        const ro = new ResizeObserver(() => updateColumnCount());
+        if (containerRef.current) ro.observe(containerRef.current);
         return () => {
             clearTimeout(timer);
             window.removeEventListener("resize", updateColumnCount);
+            ro.disconnect();
         };
-    }, []);
+    }, [tab, loading, profileUser]);
 
     useEffect(() => {
         if (!["portfolio", "likes"].includes(tab) || columnCount === 0) return;
@@ -323,14 +344,22 @@ export default function UserProfilePage() {
         const computedStyle = window.getComputedStyle(container);
         const paddingLeftValue = parseFloat(computedStyle.paddingLeft) || 0;
         const paddingRight = parseFloat(computedStyle.paddingRight) || 0;
-        const containerWidth = container.offsetWidth - paddingLeftValue - paddingRight;
+        const measured =
+            masonryInnerWidth > 0 ? masonryInnerWidth : container.offsetWidth - paddingLeftValue - paddingRight;
         const gapValue = 18;
-        const width = (containerWidth - (columnCount - 1) * gapValue) / columnCount;
-        return { columnWidth: width, gap: gapValue, paddingLeft: paddingLeftValue };
-    }, [columnCount]);
+        const width = (measured - (columnCount - 1) * gapValue) / columnCount;
+        return { columnWidth: Math.max(1, width), gap: gapValue, paddingLeft: paddingLeftValue };
+    }, [columnCount, masonryInnerWidth]);
 
     const handleMessage = () => {
         if (!profileUser) return;
+        if (!token) {
+            openAuthPrompt({
+                title: "登录后发送私信",
+                description: "登录后可向对方发起站内私信，沟通合作或约稿。",
+            });
+            return;
+        }
         navigate("/inbox", { state: { otherUserId: profileUser.id } });
     };
 
@@ -365,7 +394,7 @@ export default function UserProfilePage() {
             <div
                 className="user-profile-banner"
                 style={{
-                    backgroundImage: `url(${profileUser.profileBackgroundUrl ? (profileUser.profileBackgroundUrl.startsWith("http") ? profileUser.profileBackgroundUrl : `${API_BASE_URL}${profileUser.profileBackgroundUrl}`) : DEFAULT_BANNER})`,
+                    backgroundImage: `url(${profileUser.profileBackgroundUrl ? resolveApiUrl(profileUser.profileBackgroundUrl) : DEFAULT_BANNER})`,
                     backgroundPosition: `${profileUser.backgroundPositionX ?? 50}% ${profileUser.backgroundPositionY ?? 50}%`,
                 }}
             >
@@ -433,7 +462,12 @@ export default function UserProfilePage() {
                                 >
                                     <Card
                                         artwork={artwork}
-                                        onClick={() => navigate(`/artwork/${artwork.id}`)}
+                                        apiBaseUrl={API_BASE_URL}
+                                        onClick={() =>
+                                            navigate(`/artwork/${artwork.id}`, {
+                                                state: buildArtworkCloseState(`${location.pathname}${location.search}`),
+                                            })
+                                        }
                                     />
                                 </div>
                             )})}
@@ -453,9 +487,7 @@ export default function UserProfilePage() {
                             <div className="user-profile-commissions-grid">
                                 {commissions.map((commission) => {
                                     const imageUrl = commission.previewImageUrl
-                                        ? (commission.previewImageUrl.startsWith("http")
-                                            ? commission.previewImageUrl
-                                            : `${API_BASE_URL}${commission.previewImageUrl}`)
+                                        ? resolveApiUrl(commission.previewImageUrl)
                                         : "";
                                     return (
                                         <article

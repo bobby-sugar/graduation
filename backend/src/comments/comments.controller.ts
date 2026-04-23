@@ -2,15 +2,20 @@ import { Body, Controller, Get, Param, ParseIntPipe, Post, UseGuards } from "@ne
 import { CommentsService } from "./comments.service";
 import { CreateCommentDto } from "./dto/create-comment.dto";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
-import { GetUser } from "../auth/get-user.decorator";
+import { OptionalJwtAuthGuard } from "../auth/optional-jwt.guard";
+import { GetUser, GetUserOptional } from "../auth/get-user.decorator";
 
 @Controller()
 export class CommentsController {
   constructor(private readonly commentsService: CommentsService) {}
 
   @Get("artworks/:id/comments")
-  findByArtwork(@Param("id", ParseIntPipe) id: number) {
-    return this.commentsService.findByArtwork(id);
+  @UseGuards(OptionalJwtAuthGuard)
+  findByArtwork(
+    @Param("id", ParseIntPipe) id: number,
+    @GetUserOptional() user?: { id: number },
+  ) {
+    return this.commentsService.findByArtwork(id, user?.id);
   }
 
   @Post("artworks/:id/comments")
@@ -28,8 +33,9 @@ export class CommentsController {
   }
 
   @Post("comments/:id/like")
-  like(@Param("id", ParseIntPipe) id: number) {
-    return this.commentsService.like(id);
+  @UseGuards(JwtAuthGuard)
+  like(@Param("id", ParseIntPipe) id: number, @GetUser() user: { id: number }) {
+    return this.commentsService.like(id, user.id);
   }
 }
 

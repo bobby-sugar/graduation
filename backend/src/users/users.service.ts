@@ -1,11 +1,16 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
+import { ArtworksService } from "../artworks/artworks.service";
 import { UpdateUserDto } from "./dto/update-user.dto";
 import { PatchMeDto } from "./dto/patch-me.dto";
+import { PUBLIC_USER_SELECT } from "./user-public-select";
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly artworks: ArtworksService,
+  ) {}
 
   async findMe(id: number) {
     const user = await this.prisma.user.findUnique({
@@ -88,14 +93,18 @@ export class UsersService {
     });
   }
 
-  async findLikedArtworksPublic(userId: number) {
+  /** 与作品列表一致的 OC 隐私：他人不可见 private；登录者可看自己为作者的 private */
+  async findLikedArtworksPublic(userId: number, viewerId?: number | null) {
     const liked = await this.prisma.artworkLike.findMany({
-      where: { userId },
+      where: {
+        userId,
+        artwork: this.artworks.artworkReadableWhereForViewer(viewerId ?? null),
+      },
       orderBy: { createdAt: "desc" },
       select: {
         artwork: {
           include: {
-            author: true,
+            author: { select: PUBLIC_USER_SELECT },
             _count: { select: { comments: true } },
           },
         },
@@ -115,6 +124,19 @@ export class UsersService {
     return this.prisma.user.update({
       where: { id },
       data: dto,
+      select: {
+        id: true,
+        username: true,
+        email: true,
+        avatarUrl: true,
+        avatarPositionX: true,
+        avatarPositionY: true,
+        profileBackgroundUrl: true,
+        backgroundPositionX: true,
+        backgroundPositionY: true,
+        bio: true,
+        location: true,
+      },
     });
   }
 }

@@ -1,28 +1,26 @@
-import { useState, useRef, useEffect, useMemo, useCallback } from "react";
-import { useNavigate, Navigate } from "react-router-dom";
+import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import Card from "../components/Card";
 import type { Artwork, CategoryOption } from "../types";
 import { useAuth } from "../contexts/AuthContext";
-
-const API_BASE_URL = "http://localhost:3000";
-const DEFAULT_BACKGROUND = "https://images.unsplash.com/photo-1557683316-973673baf926?w=1920&h=640&fit=crop";
+import { AuthPromptPanel } from "../components/auth/AuthPromptPanel";
+import { API_BASE_URL, resolveApiUrl } from "../config/api";
+import { buildArtworkCloseState } from "../artwork/artworkDetailNavigation";
+const DEFAULT_BACKGROUND = "/me-default-background.png";
 
 interface CardPosition {
     column: number;
     top: number;
 }
 
-type CategoryOptionMe = "favorites" | "my-works" | "oc" | "worldview" | "nienien" | "emoji" | "novel" | "comic";
+type CategoryOptionMe = "favorites" | "my-works" | "oc" | "worldview" | "emoji";
 
 const categoryLabels: Record<CategoryOptionMe, string> = {
     favorites: "收藏",
     "my-works": "我的作品",
     oc: "OC",
     worldview: "世界观",
-    nienien: "捏捏",
     emoji: "表情包",
-    novel: "小说",
-    comic: "漫画",
 };
 
 interface FollowingUser {
@@ -35,6 +33,7 @@ type FollowUser = FollowingUser;
 
 export default function MePage() {
     const navigate = useNavigate();
+    const location = useLocation();
     const { user, isReady, token } = useAuth();
     const [artworks, setArtworks] = useState<Artwork[]>([]);
     const [favoritedArtworks, setFavoritedArtworks] = useState<Artwork[]>([]);
@@ -51,13 +50,9 @@ export default function MePage() {
     const containerRef = useRef<HTMLDivElement>(null);
     const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
-    if (!isReady) {
-        return null;
-    }
-
     const filteredArtworks = useMemo(() => {
-        if (selectedCategory === "favorites") return favoritedArtworks;
-        if (selectedCategory === "my-works") return artworks;
+        if (selectedCategory === "favorites") return favoritedArtworks.filter((a) => (a.category ?? "").toLowerCase() !== "novel");
+        if (selectedCategory === "my-works") return artworks.filter((a) => (a.category ?? "").toLowerCase() !== "novel");
         return artworks.filter((a) => a.category === selectedCategory);
     }, [artworks, favoritedArtworks, selectedCategory]);
 
@@ -79,9 +74,9 @@ export default function MePage() {
                     const rawUrl: string | null | undefined = item.imageUrl;
                     let imageUrl = "";
                     if (typeof rawUrl === "string" && rawUrl.length > 0) {
-                        imageUrl = rawUrl.startsWith("http") ? rawUrl : `${API_BASE_URL}${rawUrl}`;
+                        imageUrl = resolveApiUrl(rawUrl);
                     }
-                    if (!imageUrl) imageUrl = `${API_BASE_URL}/uploads/oc_${item.id}.jpg`;
+                    if (!imageUrl) imageUrl = resolveApiUrl(`/uploads/oc_${item.id}.jpg`);
                     return {
                         id: item.id,
                         title: item.title,
@@ -93,6 +88,8 @@ export default function MePage() {
                         commentCount: item.commentCount ?? 0,
                         createdAt: item.createdAt ?? new Date().toISOString(),
                         category: (item.category as CategoryOption) ?? undefined,
+                        description: item.description ?? null,
+                        tags: item.tags ?? null,
                         isLiked: item.isLiked,
                         isCommented: item.isCommented,
                         hasViewed: item.hasViewed,
@@ -124,9 +121,9 @@ export default function MePage() {
                     const rawUrl: string | null | undefined = item.imageUrl;
                     let imageUrl = "";
                     if (typeof rawUrl === "string" && rawUrl.length > 0) {
-                        imageUrl = rawUrl.startsWith("http") ? rawUrl : `${API_BASE_URL}${rawUrl}`;
+                        imageUrl = resolveApiUrl(rawUrl);
                     }
-                    if (!imageUrl) imageUrl = `${API_BASE_URL}/uploads/oc_${item.id}.jpg`;
+                    if (!imageUrl) imageUrl = resolveApiUrl(`/uploads/oc_${item.id}.jpg`);
                     return {
                         id: item.id,
                         title: item.title,
@@ -138,6 +135,8 @@ export default function MePage() {
                         commentCount: item.commentCount ?? 0,
                         createdAt: item.createdAt ?? new Date().toISOString(),
                         category: (item.category as CategoryOption) ?? undefined,
+                        description: item.description ?? null,
+                        tags: item.tags ?? null,
                         isLiked: item.isLiked,
                         isCommented: item.isCommented,
                         hasViewed: item.hasViewed,
@@ -193,24 +192,45 @@ export default function MePage() {
         const computedStyle = window.getComputedStyle(container);
         const paddingLeft = parseFloat(computedStyle.paddingLeft) || 12;
         const paddingRight = parseFloat(computedStyle.paddingRight) || 12;
-        const containerWidth = container.offsetWidth - paddingLeft - paddingRight;
+        // 必须以容器真实布局宽度为准；刷新首帧若用 viewport 与父级 max 的混合值，会得到错误的列数并在后续「跳变」
+        const clientW = container.clientWidth;
+        if (clientW <= 0) return;
+        const innerWidth = Math.max(280, clientW - paddingLeft - paddingRight);
         const g = 12;
         const minCardWidth = 200;
-        let cols = Math.floor((containerWidth + g) / (minCardWidth + g));
+        let cols = Math.floor((innerWidth + g) / (minCardWidth + g));
         cols = Math.max(2, Math.min(cols, 5));
         setColumnCount(cols);
-        const cw = (containerWidth - (cols - 1) * g) / cols;
+        const cw = (innerWidth - (cols - 1) * g) / cols;
         setColumnWidth(cw);
         setLayoutPaddingLeft(paddingLeft);
     }, []);
 
-    useEffect(() => {
+    // 同步测量，减少首屏错位；并在 isReady/user 就绪导致容器首次挂载时一定会重跑（仅 [updateLayout] 时首帧无 ref 会永远不再测量）
+    useLayoutEffect(() => {
+        if (!isReady || !user) return;
         updateLayout();
-    }, [updateLayout]);
+    }, [isReady, user, updateLayout]);
+
+    useEffect(() => {
+        if (!isReady || !user) return;
+        const el = containerRef.current;
+        if (!el || typeof ResizeObserver === "undefined") return;
+        const ro = new ResizeObserver(() => {
+            updateLayout();
+        });
+        ro.observe(el);
+        return () => ro.disconnect();
+    }, [isReady, user, updateLayout]);
 
     useEffect(() => {
         window.addEventListener("resize", updateLayout);
-        return () => window.removeEventListener("resize", updateLayout);
+        const onLoad = () => updateLayout();
+        window.addEventListener("load", onLoad);
+        return () => {
+            window.removeEventListener("resize", updateLayout);
+            window.removeEventListener("load", onLoad);
+        };
     }, [updateLayout]);
 
     const recalculateMasonry = useCallback(() => {
@@ -238,6 +258,19 @@ export default function MePage() {
         recalculateMasonry();
     }, [recalculateMasonry]);
 
+    // 刷新后图片与字体异步加载会影响卡片高度，补两次延迟重算避免首屏错位
+    useEffect(() => {
+        if (filteredArtworks.length === 0) return;
+        const raf = window.requestAnimationFrame(() => recalculateMasonry());
+        const t1 = window.setTimeout(() => recalculateMasonry(), 120);
+        const t2 = window.setTimeout(() => recalculateMasonry(), 420);
+        return () => {
+            window.cancelAnimationFrame(raf);
+            window.clearTimeout(t1);
+            window.clearTimeout(t2);
+        };
+    }, [filteredArtworks, recalculateMasonry]);
+
     // 图片懒加载后卡片高度会变化，需要实时重算瀑布流位置
     useEffect(() => {
         if (filteredArtworks.length === 0) return;
@@ -253,19 +286,20 @@ export default function MePage() {
         return () => observer.disconnect();
     }, [filteredArtworks, recalculateMasonry]);
 
-    const categories: CategoryOptionMe[] = [
-        "favorites",
-        "my-works",
-        "oc",
-        "worldview",
-        "nienien",
-        "emoji",
-        "novel",
-        "comic",
-    ];
+    const categories: CategoryOptionMe[] = ["favorites", "my-works", "oc", "worldview", "emoji"];
+
+    if (!isReady) {
+        return null;
+    }
 
     if (!user) {
-        return <Navigate to="/login?from=/me" replace />;
+        return (
+            <div className="oc-auth-gate-page">
+                <div className="oc-auth-gate-page__inner">
+                    <AuthPromptPanel title="登录后查看个人中心" description="登录后可管理作品、收藏、资料卡与关注关系。" />
+                </div>
+            </div>
+        );
     }
 
     return (
@@ -274,7 +308,7 @@ export default function MePage() {
                 <div
                     className="profile-header-background"
                     style={{
-                        backgroundImage: `url(${user.profileBackgroundUrl ? (user.profileBackgroundUrl.startsWith("http") ? user.profileBackgroundUrl : `${API_BASE_URL}${user.profileBackgroundUrl}`) : DEFAULT_BACKGROUND})`,
+                        backgroundImage: `url(${user.profileBackgroundUrl ? resolveApiUrl(user.profileBackgroundUrl) : DEFAULT_BACKGROUND})`,
                         backgroundPosition: `${user.backgroundPositionX ?? 50}% ${user.backgroundPositionY ?? 50}%`,
                     }}
                 >
@@ -363,7 +397,7 @@ export default function MePage() {
                                     fill="none"
                                     stroke="currentColor"
                                     strokeWidth="2"
-                                    style={{ marginRight: 6 }}
+                                    aria-hidden
                                 >
                                     <circle cx="12" cy="12" r="3"></circle>
                                     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09A1.65 1.65 0 0 0 15 4.6a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
@@ -417,12 +451,24 @@ export default function MePage() {
                         >
                             <Card
                                 artwork={artwork}
-                                onClick={() => navigate(`/artwork/${artwork.id}`)}
+                                apiBaseUrl={API_BASE_URL}
+                                onClick={() =>
+                                    navigate(`/artwork/${artwork.id}`, {
+                                        state: buildArtworkCloseState(`${location.pathname}${location.search}`),
+                                    })
+                                }
                             />
                         </div>
                     );
                 })}
             </div>
+
+            {filteredArtworks.length === 0 && (
+                <div className="me-empty-gallery" role="status">
+                    <p className="me-empty-gallery-title">这里还没有内容</p>
+                    <p className="me-empty-gallery-hint">切换上方分类查看，或前往工作站发布作品</p>
+                </div>
+            )}
         </div>
     );
 }

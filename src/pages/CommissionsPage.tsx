@@ -5,6 +5,7 @@ import FilterSidebar from "../components/FilterSidebar";
 import type { CommissionFilters } from "../components/FilterSidebar";
 import CommissionCard from "../components/CommissionCard";
 import { useAuth } from "../contexts/AuthContext";
+import { resolveApiUrl } from "../config/api";
 
 type CommissionStatus = 'new' | 'pending' | 'payment-pending' | 'wip' | 'review-pending' | 'revising' | 'done';
 type PaymentStatus = 'unpaid' | 'paid' | 'partial' | 'hold';
@@ -109,15 +110,21 @@ function CommissioningPage({
     );
 }
 
-const API_BASE_URL = "http://localhost:3000";
 const VIEW_STATE_STORAGE_KEY = "oc_commissions_view_state_v1";
 const DEFAULT_FILTERS: CommissionFilters = {
     commissionType: "全部",
-    amountOrder: "",
+    amountOrder: "全部",
     deliveryTime: "全部",
     copyrightType: "全部",
     responseSpeed: "全部",
 };
+
+function normalizeCommissionFilters(saved?: CommissionFilters): CommissionFilters {
+    if (!saved) return DEFAULT_FILTERS;
+    const merged = { ...DEFAULT_FILTERS, ...saved };
+    if (merged.amountOrder === "") merged.amountOrder = "全部";
+    return merged;
+}
 
 function readSavedViewState() {
     const raw = sessionStorage.getItem(VIEW_STATE_STORAGE_KEY);
@@ -160,6 +167,7 @@ function applyFilters(items: CommissionForUI[], filters: CommissionFilters) {
     return filtered.sort((a, b) => {
         if (filters.amountOrder === "由高到低") return (b.price ?? 0) - (a.price ?? 0);
         if (filters.amountOrder === "由低到高") return (a.price ?? 0) - (b.price ?? 0);
+        // 「全部」或历史空值：按发布时间倒序
         return new Date(b.submittedDate).getTime() - new Date(a.submittedDate).getTime();
     });
 }
@@ -168,7 +176,7 @@ export default function CommissionsPage() {
     const savedViewState = readSavedViewState();
     const { user } = useAuth();
     const [allCommissions, setAllCommissions] = useState<CommissionForUI[]>([]);
-    const [filters, setFilters] = useState<CommissionFilters>(savedViewState?.filters ?? DEFAULT_FILTERS);
+    const [filters, setFilters] = useState<CommissionFilters>(() => normalizeCommissionFilters(savedViewState?.filters));
     const [isFlipped, setIsFlipped] = useState(savedViewState?.isFlipped ?? false);
     const [expandedFilterItems, setExpandedFilterItems] = useState<string[]>(savedViewState?.expandedFilterItems ?? []);
     const restoreScrollYRef = useRef<number | null>(typeof savedViewState?.scrollY === "number" ? savedViewState.scrollY : null);
@@ -205,7 +213,7 @@ export default function CommissionsPage() {
                     submittedDate: c.submittedAt,
                     category: c.category ?? undefined,
                     previewImage: c.previewImageUrl
-                        ? (c.previewImageUrl.startsWith("http") ? c.previewImageUrl : `${API_BASE_URL}${c.previewImageUrl}`)
+                        ? resolveApiUrl(c.previewImageUrl)
                         : undefined,
                     isMine:
                         !!user?.id &&

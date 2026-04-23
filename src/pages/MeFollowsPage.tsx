@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { Navigate, useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
+import { AuthPromptPanel } from "../components/auth/AuthPromptPanel";
+import { resolveApiUrl } from "../config/api";
 
 interface FollowUser {
   id: number;
@@ -9,8 +11,6 @@ interface FollowUser {
 }
 
 type FollowTab = "following" | "followers";
-
-const API_BASE_URL = "http://localhost:3000";
 
 export default function MeFollowsPage() {
   const { user, token, isReady } = useAuth();
@@ -57,7 +57,15 @@ export default function MeFollowsPage() {
   }, [token, user]);
 
   if (!isReady) return null;
-  if (!user) return <Navigate to="/login?from=/me/follows" replace />;
+  if (!user) {
+    return (
+      <div className="oc-auth-gate-page">
+        <div className="oc-auth-gate-page__inner">
+          <AuthPromptPanel title="登录后查看关注与粉丝" description="登录后可管理关注列表、查看粉丝，并快速访问对方主页。" />
+        </div>
+      </div>
+    );
+  }
 
   const followingSet = useMemo(
     () => new Set(followingList.map((u) => u.id)),
@@ -102,53 +110,86 @@ export default function MeFollowsPage() {
     <div className="me-follows-page">
       <div className="me-follows-layout">
         <aside className="me-follows-sidebar">
-          <h2 className="me-follows-sidebar-title">关系管理</h2>
+          <h2 className="me-follows-sidebar-title">关系</h2>
+          <p className="me-follows-sidebar-desc">管理关注与粉丝</p>
           <button
             type="button"
             className={`me-follows-sidebar-item ${activeTab === "following" ? "active" : ""}`}
             onClick={() => switchTab("following")}
           >
-            全部关注
-            <span>{followingList.length}</span>
+            <span className="me-follows-sidebar-label">全部关注</span>
+            <span className="me-follows-sidebar-count">{followingList.length}</span>
           </button>
           <button
             type="button"
             className={`me-follows-sidebar-item ${activeTab === "followers" ? "active" : ""}`}
             onClick={() => switchTab("followers")}
           >
-            我的粉丝
-            <span>{followersList.length}</span>
+            <span className="me-follows-sidebar-label">我的粉丝</span>
+            <span className="me-follows-sidebar-count">{followersList.length}</span>
           </button>
           <button
             type="button"
             className="me-follows-sidebar-back"
             onClick={() => navigate("/me")}
           >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+              <path d="M19 12H5M12 19l-7-7 7-7" />
+            </svg>
             返回我的主页
           </button>
         </aside>
 
         <section className="me-follows-main">
           <div className="me-follows-main-header">
-            <h1>{activeTab === "following" ? "全部关注" : "我的粉丝"}</h1>
-            <input
-              className="me-follows-search"
-              type="text"
-              value={keyword}
-              onChange={(e) => setKeyword(e.target.value)}
-              placeholder="输入用户名搜索"
-            />
+            <div className="me-follows-main-title-wrap">
+              <h1>{activeTab === "following" ? "全部关注" : "我的粉丝"}</h1>
+              <p className="me-follows-main-sub">
+                {activeTab === "following"
+                  ? "共 " + followingList.length + " 人"
+                  : "共 " + followersList.length + " 人"}
+              </p>
+            </div>
+            <div className="me-follows-search-wrap">
+              <svg className="me-follows-search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <circle cx="11" cy="11" r="8" stroke="currentColor" strokeWidth="2" />
+                <path d="m21 21-4.3-4.3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              </svg>
+              <input
+                className="me-follows-search"
+                type="search"
+                value={keyword}
+                onChange={(e) => setKeyword(e.target.value)}
+                placeholder="搜索用户名"
+                autoComplete="off"
+                enterKeyHint="search"
+              />
+            </div>
           </div>
 
           {loading ? (
-            <div className="me-follows-empty">加载中...</div>
+            <div className="me-follows-state me-follows-state--loading" role="status">
+              <span className="me-follows-spinner" aria-hidden />
+              <span>加载中…</span>
+            </div>
           ) : filtered.length === 0 ? (
-            <div className="me-follows-empty">暂无数据</div>
+            <div className="me-follows-state me-follows-state--empty" role="status">
+              <p className="me-follows-state-title">
+                {keyword.trim() ? "没有匹配的用户" : activeTab === "following" ? "还没有关注任何人" : "暂时还没有粉丝"}
+              </p>
+              <p className="me-follows-state-hint">
+                {keyword.trim()
+                  ? "换个关键词试试"
+                  : activeTab === "following"
+                    ? "去发现页逛逛，关注喜欢的作者吧"
+                    : "发布优质作品更容易获得关注"}
+              </p>
+            </div>
           ) : (
             <div className="me-follows-list">
               {filtered.map((u) => {
                 const normalizedAvatar = u.avatarUrl
-                  ? (u.avatarUrl.startsWith("http") ? u.avatarUrl : `${API_BASE_URL}${u.avatarUrl}`)
+                  ? resolveApiUrl(u.avatarUrl)
                   : null;
                 const isFollowing = followingSet.has(u.id);
                 return (

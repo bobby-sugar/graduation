@@ -6,6 +6,7 @@ import {
 } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
 import { ChatPushService } from "../realtime/chat-push.service";
+import { PUBLIC_USER_SELECT } from "../users/user-public-select";
 
 /** 发布者可改稿、删稿的阶段（待支付起已锁定，避免影响已确认承接关系） */
 const PUBLISHER_EDITABLE_STATUSES = new Set(["new", "pending"]);
@@ -43,22 +44,26 @@ export class CommissionsService {
     return created.id;
   }
 
-  findAll(params: { artistId?: number; clientId?: number; direction?: string }) {
-    const { artistId, clientId, direction } = params;
-    /** 稿件广场：无发布者/承接方筛选时只展示仍可被申请的公开稿（新建、待确认） */
-    const isPublicSquare =
-      (artistId == null || !Number.isFinite(artistId)) &&
-      (clientId == null || !Number.isFinite(clientId));
+  findAll(params: {
+    artistId?: number;
+    clientId?: number;
+    direction?: string;
+    viewerId?: number;
+  }) {
+    const { artistId, clientId, direction, viewerId } = params;
+    const viewerCanReadPrivate =
+      (artistId != null && viewerId != null && artistId === viewerId) ||
+      (clientId != null && viewerId != null && clientId === viewerId);
     return this.prisma.commission.findMany({
       where: {
-        ...(isPublicSquare ? { status: { in: ["new", "pending"] } } : {}),
+        ...(!viewerCanReadPrivate ? { status: { in: ["new", "pending"] } } : {}),
         ...(artistId ? { artistId } : {}),
         ...(clientId ? { clientId } : {}),
         ...(direction ? { direction } : {}),
       },
       include: {
-        client: true,
-        artist: true,
+        client: { select: PUBLIC_USER_SELECT },
+        artist: { select: PUBLIC_USER_SELECT },
       },
       orderBy: {
         submittedAt: "desc",
@@ -98,8 +103,8 @@ export class CommissionsService {
         artistId: direction === "offer" ? publisherId : null,
       },
       include: {
-        client: true,
-        artist: true,
+        client: { select: PUBLIC_USER_SELECT },
+        artist: { select: PUBLIC_USER_SELECT },
       },
     });
   }
@@ -191,7 +196,7 @@ export class CommissionsService {
     let viewerPendingApplication = false;
     if (
       viewerNum != null &&
-      row.status === "pending" &&
+      (row.status === "pending" || row.status === "new") &&
       this.getPayerId(row) == null
     ) {
       const publisherId = this.getPublisherId(row);
@@ -671,7 +676,10 @@ export class CommissionsService {
       const row = await tx.commission.update({
         where: { id },
         data: { status: "wip", lastDeliveryRoundAt: roundAt },
-        include: { client: true, artist: true },
+        include: {
+          client: { select: PUBLIC_USER_SELECT },
+          artist: { select: PUBLIC_USER_SELECT },
+        },
       });
       const conversationId = await this.getOrCreateConversationId(
         userId,
@@ -780,6 +788,7 @@ export class CommissionsService {
         paymentStatus: true,
         clientId: true,
         artistId: true,
+        updatedAt: true,
       },
     });
     if (!row) throw new NotFoundException("稿件不存在");
@@ -834,6 +843,16 @@ export class CommissionsService {
     const resetPendingToNew =
       current.status === "pending" && this.getPayerId(current) == null;
 
+    /** 仅改文案/封面等时不推进 updatedAt，避免已有申请被「本轮」时间线误判为过期 */
+    const openRecruitmentNoParty =
+      (current.status === "pending" || current.status === "new") &&
+      this.getPayerId(current) == null;
+    const preserveUpdatedAt =
+      openRecruitmentNoParty &&
+      !resetPendingToNew &&
+      direction === undefined &&
+      (status === undefined || status === current.status);
+
     let revisedPushIds: number[] = [];
     const updated = await this.prisma.$transaction(async (tx) => {
       const dir =
@@ -850,6 +869,7 @@ export class CommissionsService {
           ...(status !== undefined ? { status } : {}),
           ...(resetPendingToNew ? { status: "new" } : {}),
           ...(data.previewImageUrl !== undefined ? { previewImageUrl: data.previewImageUrl } : {}),
+          ...(preserveUpdatedAt ? { updatedAt: current.updatedAt } : {}),
           ...(direction !== undefined
             ? {
                 direction,
@@ -859,8 +879,8 @@ export class CommissionsService {
             : {}),
         },
         include: {
-          client: true,
-          artist: true,
+          client: { select: PUBLIC_USER_SELECT },
+          artist: { select: PUBLIC_USER_SELECT },
         },
       });
 
@@ -967,7 +987,10 @@ export class CommissionsService {
     if (row.paymentStatus === "paid") {
       return this.prisma.commission.findUnique({
         where: { id },
-        include: { client: true, artist: true },
+        include: {
+          client: { select: PUBLIC_USER_SELECT },
+          artist: { select: PUBLIC_USER_SELECT },
+        },
       });
     }
     const publisherId = this.getPublisherId(row);
@@ -990,8 +1013,8 @@ export class CommissionsService {
           status: "wip",
         },
         include: {
-          client: true,
-          artist: true,
+          client: { select: PUBLIC_USER_SELECT },
+          artist: { select: PUBLIC_USER_SELECT },
         },
       });
       const conversationId = await this.getOrCreateConversationId(userId, publisherId, tx);
@@ -1062,8 +1085,8 @@ export class CommissionsService {
         where: { id },
         data: { ...nextData, updatedAt: row.updatedAt },
         include: {
-          client: true,
-          artist: true,
+          client: { select: PUBLIC_USER_SELECT },
+          artist: { select: PUBLIC_USER_SELECT },
         },
       });
       const conversationId = await this.getOrCreateConversationId(
@@ -1150,7 +1173,10 @@ export class CommissionsService {
       this.chatPush.notifyCommissionInboxForParties(row, id);
       return this.prisma.commission.findUnique({
         where: { id },
-        include: { client: true, artist: true },
+        include: {
+          client: { select: PUBLIC_USER_SELECT },
+          artist: { select: PUBLIC_USER_SELECT },
+        },
       });
     }
 
@@ -1162,7 +1188,10 @@ export class CommissionsService {
       const onlyStatus = await this.prisma.commission.update({
         where: { id },
         data: { status: "review-pending" },
-        include: { client: true, artist: true },
+        include: {
+          client: { select: PUBLIC_USER_SELECT },
+          artist: { select: PUBLIC_USER_SELECT },
+        },
       });
       this.chatPush.notifyCommissionInboxForParties(onlyStatus, id);
       return onlyStatus;
@@ -1176,13 +1205,19 @@ export class CommissionsService {
       if (row.status === "review-pending") {
         updated = await tx.commission.findUnique({
           where: { id },
-          include: { client: true, artist: true },
+          include: {
+            client: { select: PUBLIC_USER_SELECT },
+            artist: { select: PUBLIC_USER_SELECT },
+          },
         });
       } else {
         updated = await tx.commission.update({
           where: { id },
           data: { status: "review-pending" },
-          include: { client: true, artist: true },
+          include: {
+            client: { select: PUBLIC_USER_SELECT },
+            artist: { select: PUBLIC_USER_SELECT },
+          },
         });
       }
       if (!updated) {
@@ -1235,7 +1270,10 @@ export class CommissionsService {
       const row = await tx.commission.update({
         where: { id },
         data: { status: "done" },
-        include: { client: true, artist: true },
+        include: {
+          client: { select: PUBLIC_USER_SELECT },
+          artist: { select: PUBLIC_USER_SELECT },
+        },
       });
       const conversationId = await this.getOrCreateConversationId(userId, publisherId, tx);
       const msg = await tx.message.create({

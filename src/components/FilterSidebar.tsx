@@ -24,7 +24,7 @@ interface FilterSidebarProps {
 
 const selectOptions = {
     commissionType: ["全部", "头像", "半身", "全身", "立绘", "场景", "Live2D", "UI设计"],
-    amountOrder: ["由低到高", "由高到低"],
+    amountOrder: ["全部", "由低到高", "由高到低"],
     deliveryTime: ["全部", "3天内", "1周内", "2周内", "1个月内", "可协商"],
     copyrightType: ["全部", "个人使用", "商用可用", "买断版权"],
     responseSpeed: ["全部", "24小时内", "12小时内", "6小时内"],
@@ -105,7 +105,7 @@ export default function FilterSidebar({
     const resetFilters = () => {
         onChange({
             commissionType: "全部",
-            amountOrder: "",
+            amountOrder: "全部",
             deliveryTime: "全部",
             copyrightType: "全部",
             responseSpeed: "全部",
@@ -165,9 +165,6 @@ export default function FilterSidebar({
                                             })
                                         }
                                     >
-                                        {item.key === "amountOrder" && (
-                                            <option value="">默认排序</option>
-                                        )}
                                         {(selectOptions[item.key as keyof typeof selectOptions] || ["全部"]).map((opt) => (
                                             <option key={opt} value={opt}>
                                                 {opt}

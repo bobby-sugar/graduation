@@ -1,6 +1,8 @@
 import { useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
+import { AuthPromptPanel } from "../components/auth/AuthPromptPanel";
+import { useAuthPrompt } from "../contexts/AuthPromptContext";
 
 type Direction = "commission" | "offer";
 type CopyrightType = "个人使用" | "商用可用" | "买断版权";
@@ -70,6 +72,7 @@ async function buildCroppedFile(
 export default function CommissionCreatePage() {
   const navigate = useNavigate();
   const { token } = useAuth();
+  const { openAuthPrompt } = useAuthPrompt();
   const imageInputRef = useRef<HTMLInputElement>(null);
   const cropEditorRef = useRef<HTMLDivElement>(null);
   const dragStartRef = useRef<{ x: number; y: number; originX: number; originY: number } | null>(null);
@@ -170,7 +173,10 @@ export default function CommissionCreatePage() {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!token) {
-      setError("请先登录后再发布稿件");
+      openAuthPrompt({
+        title: "登录后发布稿件",
+        description: "登录后即可提交约稿或接稿信息。",
+      });
       return;
     }
     const missingFields: string[] = [];
@@ -247,6 +253,26 @@ export default function CommissionCreatePage() {
       setSubmitting(false);
     }
   };
+
+  if (!token) {
+    return (
+      <div className="oc-auth-gate-page">
+        <div className="oc-auth-gate-page__inner">
+          <button
+            type="button"
+            className="commission-detail-back oc-auth-gate-page__back"
+            onClick={() => navigate(-1)}
+          >
+            返回
+          </button>
+          <AuthPromptPanel
+            title="登录后发布稿件"
+            description="登录后即可发布约稿或接稿信息，上传封面并与创作者在站内沟通。"
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="commission-create-page">

@@ -10,6 +10,7 @@ import {
   WebSocketServer,
 } from "@nestjs/websockets";
 import { Server, Socket } from "socket.io";
+import { PrismaService } from "../prisma/prisma.service";
 
 export type ChatMessagePushPayload = {
   id: number;
@@ -33,9 +34,26 @@ export class ChatGateway implements OnGatewayConnection {
   constructor(
     private readonly jwtService: JwtService,
     private readonly config: ConfigService,
+    private readonly prisma: PrismaService,
   ) {}
 
-  handleConnection(client: Socket) {
+  private async canViewArtworkRoom(
+    artworkId: number,
+    viewerId: number | null,
+  ): Promise<boolean> {
+    const art = await this.prisma.artwork.findUnique({
+      where: { id: artworkId },
+      select: { category: true, ocPrivacy: true, authorId: true },
+    });
+    if (!art) return false;
+    const c = art.category.toLowerCase();
+    const gated = c === "oc" || c === "worldview" || c === "emoji";
+    if (!gated || art.ocPrivacy !== "private") return true;
+    return viewerId != null && viewerId === art.authorId;
+  }
+
+  async handleConnection(client: Socket) {
+    const data = client.data as { guest?: boolean; userId?: number };
     const raw =
       typeof client.handshake.auth?.token === "string"
         ? client.handshake.auth.token
@@ -43,7 +61,7 @@ export class ChatGateway implements OnGatewayConnection {
           ? client.handshake.query.token
           : null;
     if (!raw) {
-      (client.data as { guest?: boolean }).guest = true;
+      data.guest = true;
       return;
     }
     try {
@@ -52,6 +70,7 @@ export class ChatGateway implements OnGatewayConnection {
       const payload = this.jwtService.verify<{
         sub?: number | string;
         type?: string;
+        sid?: string;
       }>(raw, { secret });
       if (payload.type && payload.type !== "access") {
         client.disconnect(true);
@@ -62,6 +81,17 @@ export class ChatGateway implements OnGatewayConnection {
         client.disconnect(true);
         return;
       }
+      const sid = typeof payload.sid === "string" ? payload.sid.trim() : "";
+      if (sid) {
+        const session = await this.prisma.session.findFirst({
+          where: { id: sid, userId: uid, revokedAt: null },
+        });
+        if (!session || session.expiresAt.getTime() <= Date.now()) {
+          client.disconnect(true);
+          return;
+        }
+      }
+      data.userId = uid;
       void client.join(`user:${uid}`);
     } catch {
       client.disconnect(true);
@@ -117,12 +147,16 @@ export class ChatGateway implements OnGatewayConnection {
   }
 
   @SubscribeMessage("join-artwork")
-  handleJoinArtwork(
+  async handleJoinArtwork(
     @MessageBody() body: { artworkId?: number },
     @ConnectedSocket() client: Socket,
   ) {
     const aid = Number(body?.artworkId);
     if (!Number.isFinite(aid) || aid < 1) return { ok: false };
+    const uid = (client.data as { userId?: number }).userId ?? null;
+    if (!(await this.canViewArtworkRoom(aid, uid))) {
+      return { ok: false };
+    }
     void client.join(`artwork:${aid}`);
     return { ok: true };
   }
